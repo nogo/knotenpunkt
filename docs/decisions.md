@@ -15,3 +15,15 @@
 - Words are lowercased Unicode letter or number sequences. Punctuation separates words. A short English and German stop-word list applies to both sides.
 - Equal scores sort by newer `asof`, then ascending id. Recall uses the existing live fold and stores no index.
 - `Log.Recall` accepts text, a limit and optional excluded ids. `Log.RecallClaim` accepts a claim and excludes its `supersedes` and `challenges` links, including before the claim enters the log.
+
+## Decided 2026-10-24 — frozen oracle from sidenote logs
+
+The oracle reads sidenote records directly, without the claim package or external dependencies. Its only persistent output is a new JSONL file outside the vault and this repository. The file has owner-only permissions. Existing output files are refused.
+
+Log paths sort lexically, then records fold in file order. The last decision for a claim wins; `author: "user"` also confirms a claim. Only confirmed records supersede or retract claims. Historical confirmed claims remain available for conflict pairs. Retraction markers and revisions with equal text after removing whitespace and folding case supply no conflict label. Both endpoints of a challenge must be confirmed. This interpretation uses the issue's format; the upstream source was unavailable for verification.
+
+The reader opens each log read-only and captures its length before reading records. It takes no locks. An unfinished final line is omitted and counted, so a concurrent append cannot produce a malformed record error. This is a bounded view of each file, not a transaction across files. A later run can include newly appended records.
+
+Unrelated pairs use live confirmed claims with no direct link in either direction and unequal source pages. Two absent pages count as shared; an absent page and a known page differ. A seeded reservoir samples these pairs without storing every candidate. Seed defaults to 1. If candidates run out, the oracle reports the shortfall instead of inventing labels. Pair identifiers hash the label and the unordered claim identifiers. Reasons contain fixed rule names, never source metadata.
+
+Counts describe read claim records, confirmed claim identifiers, live claims, and pairs per label. Conflict exclusions count candidate links by reason. Unrelated exclusions count candidate live pairs by reason, including eligible pairs omitted by sampling. A shortfall counts missing unrelated examples. Partial records count unfinished log lines. No diagnostic contains record contents, identifiers, or paths.
