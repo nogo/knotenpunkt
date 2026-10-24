@@ -2,7 +2,7 @@
 go = "1.27.1"
 
 [env]
-GO_DIRS = "cmd internal"
+GO_DIRS = "claim cmd internal"
 
 [tasks.test]
 description = "Run tests with race detector (no cache)"
