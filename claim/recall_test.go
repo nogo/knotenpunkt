@@ -38,7 +38,7 @@ func TestRecallOnlyReturnsLiveClaims(t *testing.T) {
 	if err := l.Decide(Decision{ClaimID: confirmed.ID, Outcome: Confirm, Author: jane}); err != nil {
 		t.Fatal(err)
 	}
-	check := func(log *Log) {
+	check := func(log *nsLog) {
 		t.Helper()
 		got := log.Recall("ACME OrderApp", 100)
 		if len(got) != 2 || got[0].Score != 2 || got[1].Score != 2 {
@@ -50,7 +50,7 @@ func TestRecallOnlyReturnsLiveClaims(t *testing.T) {
 		}
 	}
 	check(l)
-	reopened, err := Open(path)
+	reopened, err := openNSLog(path)
 	if err != nil {
 		t.Fatal(err)
 	}

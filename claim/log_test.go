@@ -14,10 +14,10 @@ var (
 	block = &Source{System: "sidenote", Ref: "blk-1", Version: "v1"}
 )
 
-func openLog(t *testing.T) (*Log, string) {
+func openLog(t *testing.T) (*nsLog, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "claims.jsonl")
-	l, err := Open(path)
+	l, err := openNSLog(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +29,7 @@ func sourced(text string, a Author) Claim {
 	return Claim{Text: text, Trust: Sourced, AsOf: "2026-01-15", Source: block, Author: a}
 }
 
-func mustAppend(t *testing.T, l *Log, c Claim) Claim {
+func mustAppend(t *testing.T, l *nsLog, c Claim) Claim {
 	t.Helper()
 	got, err := l.Append(c)
 	if err != nil {
@@ -38,7 +38,7 @@ func mustAppend(t *testing.T, l *Log, c Claim) Claim {
 	return got
 }
 
-func liveIDs(l *Log) []string {
+func liveIDs(l *nsLog) []string {
 	var ids []string
 	for _, c := range l.Live() {
 		ids = append(ids, c.ID)
@@ -81,7 +81,7 @@ func TestAppendRefusesBrokenRules(t *testing.T) {
 	if got := len(l.Live()); got != 1 {
 		t.Fatalf("live = %d, want 1", got)
 	}
-	reopened, err := Open(path)
+	reopened, err := openNSLog(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestRejectedProposalNeverBecomesLive(t *testing.T) {
 	if len(l.Live()) != 0 {
 		t.Fatal("rejected proposal is live")
 	}
-	re, err := Open(path)
+	re, err := openNSLog(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestReopenGivesTheSameLiveSet(t *testing.T) {
 	pending := len(l.Proposals())
 	l.Close()
 
-	re, err := Open(path)
+	re, err := openNSLog(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,11 +275,11 @@ func TestReopenGivesTheSameLiveSet(t *testing.T) {
 func TestOpenRefusesACorruptLog(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "claims.jsonl")
 	writeFile(t, path, "not json\n")
-	if _, err := Open(path); err == nil {
+	if _, err := openNSLog(path); err == nil {
 		t.Fatal("want an error")
 	}
 	writeFile(t, path, `{"type":"note"}`+"\n")
-	if _, err := Open(path); err == nil {
+	if _, err := openNSLog(path); err == nil {
 		t.Fatal("want an error for an unknown type")
 	}
 }

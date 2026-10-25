@@ -27,3 +27,11 @@ The reader opens each log read-only and captures its length before reading recor
 Unrelated pairs use live confirmed claims with no direct link in either direction and unequal source pages. Two absent pages count as shared; an absent page and a known page differ. A seeded reservoir samples these pairs without storing every candidate. Seed defaults to 1. If candidates run out, the oracle reports the shortfall instead of inventing labels. Pair identifiers hash the label and the unordered claim identifiers. Reasons contain fixed rule names, never source metadata.
 
 Counts describe read claim records, confirmed claim identifiers, live claims, and pairs per label. Conflict exclusions count candidate links by reason. Unrelated exclusions count candidate live pairs by reason, including eligible pairs omitted by sampling. A shortfall counts missing unrelated examples. Partial records count unfinished log lines. No diagnostic contains record contents, identifiers, or paths.
+
+## Decided 2026-10-25 — namespaces
+
+- A `Store` is the claim layer of one vault and the only exported entry point. Every call names a `Namespace`: an org, or an org and one engagement, each lowercase letters, digits and dashes. `ParseNamespace` reads `org` or `org/engagement` and returns the zero namespace on error, which every method refuses.
+- An engagement reads its own live claims, then its org's. An org reads only its own. A sibling engagement or another org is never read, by `Live`, `Recall` or `RecallClaim`. `Proposals` and `Decide` act on the named namespace only.
+- `supersedes`, `retracted` and `challenges` name claims in the claim's own namespace. A fact that crosses namespaces is a new claim whose source is `Cite(ns, id)`: system `knotenpunkt`, ref `<namespace>#<id>`. The cited claim must be live when the new claim is appended.
+- The per-namespace log is unexported (`nsLog`). The layout on disk is the store's own: `<dir>/<org>/_org.jsonl` for the org and `<dir>/<org>/<engagement>.jsonl` for an engagement. `_` cannot start a slug, so the names never clash. Reading a namespace with no claims creates no file.
+- Rejected: one log with a `namespace` field and a filter, because one missed filter leaks across clients; a deeper hierarchy, because the vault is already the outer boundary.

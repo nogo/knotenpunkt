@@ -15,7 +15,12 @@ type Match struct {
 // Recall returns positive word matches, best first, for a question or text.
 // Exclude accepts claim ids, such as a proposal's supersedes and challenges.
 // Ties use newer AsOf dates, then ascending ids. Empty input returns nothing.
-func (l *Log) Recall(text string, limit int, exclude ...string) []Match {
+func (l *nsLog) Recall(text string, limit int, exclude ...string) []Match {
+	return recall(l.Live(), text, limit, exclude...)
+}
+
+// recall ranks claims against text; Recall and Store.Recall share it.
+func recall(claims []Claim, text string, limit int, exclude ...string) []Match {
 	if limit < 1 {
 		return nil
 	}
@@ -28,7 +33,7 @@ func (l *Log) Recall(text string, limit int, exclude ...string) []Match {
 		omitted[id] = true
 	}
 	var matches []Match
-	for _, c := range l.Live() {
+	for _, c := range claims {
 		if omitted[c.ID] {
 			continue
 		}
@@ -60,7 +65,7 @@ func (l *Log) Recall(text string, limit int, exclude ...string) []Match {
 
 // RecallClaim recalls candidates for a claim, excluding the claims it replaces
 // or challenges. The input need not be appended to the log.
-func (l *Log) RecallClaim(c Claim, limit int) []Match {
+func (l *nsLog) RecallClaim(c Claim, limit int) []Match {
 	exclude := append([]string(nil), c.Supersedes...)
 	exclude = append(exclude, c.Challenges...)
 	return l.Recall(c.Text, limit, exclude...)

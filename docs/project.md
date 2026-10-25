@@ -15,7 +15,7 @@ Five earlier versions started with a code ingestion pipeline and a graph, and no
 **A claim layer that sidenote embeds, with a decide step.**
 
 - **The claim:** one record type with `text`, `trust`, `source`, `asof`, and the links `supersedes` and `challenges`. Its rules are those of sidenote's claim system (`sidenote/docs/claim-system.md`), checked when a claim is written.
-- **Store:** an append-only claim log. A correction is a new claim. The fold defines what is live.
+- **Store:** a vault's claims, append-only, addressed by namespace. A namespace is a confidentiality boundary, such as one client. A node is a set of namespaces. A correction is a new claim in the same namespace. The fold defines what is live.
 - **Propose and confirm:** a system proposes claims; only I make a claim live.
 - **Recall:** the live claims for a question.
 - **Decide (System One):** a model scores a fixed list of options from log-probabilities, with the recalled claims in the prompt. It returns the probabilities, the claim ids it used, and `unsure` below a threshold. It reads and writes nothing.
@@ -23,7 +23,7 @@ Five earlier versions started with a code ingestion pipeline and a graph, and no
 
 **First job:** sidenote's intake check. For each proposed claim, decide scores "agrees / contradicts / unrelated" against the live claims and flags possible `contested` claims before I confirm.
 
-**Oracle before code:** a frozen set of claim pairs with known answers. The set comes from my work vault. Pairs linked by `supersedes` or `challenges` in its claims are "contradicts"; pairs from different topics are "unrelated". Decide must beat a constant answer on that set before sidenote calls it. After that, my Confirm and Reject keep measuring it.
+**Oracle before code:** a frozen set of claim pairs with known answers. It is a synthetic vault of invented claims (`testdata/synthetic-vault`), German and English, with labelled proposals. My work vault could not serve: its 425 claims held no `supersedes` or `challenges` link and no rejection. Decide must beat a constant answer and word overlap on that set before sidenote calls it. After that, my Confirm and Reject keep measuring it.
 
 **Measure:** sidenote holds no claim code of its own, and the intake check flags real contradictions more often than it raises false alarms.
 
@@ -39,6 +39,9 @@ Five earlier versions started with a code ingestion pipeline and a graph, and no
 ## Constraints
 
 - **No ingestion.** knotenpunkt never parses code, docs or git, and holds no graph. A claim enters only through a proposal. Reading a source is the caller's job, on demand.
+- **Two namespace levels: org, then engagement.** The vault (the node) is the outer boundary, so nothing deeper is needed. An engagement reads its own claims and its org's claims, never a sibling's. Anything that moves up, sideways or to another org is a new claim that cites the original. `wb.py` had the same two levels in `<org>[-<engagement>].jsonl`.
+- **The files are storage, not interface.** A caller names a namespace; how knotenpunkt lays claims out on disk is its own concern and may change.
+- **Namespaces do not mix.** Recall and decide work inside one namespace. A fact that crosses is a new claim in the other namespace that cites the first as its source, never a copy. Sharing, export and deletion act on a whole namespace.
 - **knotenpunkt is the only source of truth for claims.** A system that embeds it keeps no claim log of its own. sidenote uses knotenpunkt and writes no second log.
 - **Nothing unattended writes or confirms.** Unattended writing decayed twice, measured. A system proposes; I confirm.
 - **One source per extraction run.** It cut wrong citations from 39 % to 1/20.
@@ -52,10 +55,9 @@ Five earlier versions started with a code ingestion pipeline and a graph, and no
 
 ## Open questions
 
-- **How the oracle runs on the Mac.** The work vault is the oracle; my personal vault grows from use and is not frozen. Work data stays on the Mac, so the pairs are built there, decide runs on a model there, and only scores and counts leave the machine. Which model the Mac can run is not checked.
 - **How recall finds claims.** Plain text match first. exp-002 found the embedder was the strongest lever for code search; add embeddings only if they raise the oracle's score.
 - **Transport between nodes.** A goal, not decided. The mesh rules above must hold whatever the transport is.
-- **Claim ids across nodes.** An id that names its node, so a link needs no central registry. The format is not fixed.
+- **Claim ids across nodes.** Inside a vault a citation is `<namespace>#<id>`. Across nodes it also needs the node. The format is not fixed.
 - **Where decide runs for the work vault.** llama-server runs on friday, and work claims must not leave the Mac. Either a model runs on the Mac, or decide is off for that node.
 - **The judge's reliability.** No System One model has yet beaten a constant answer: on 31 forge failures, always answering "provider" scores 0.65, the same as the best models. A judge that says "yes" too often gives confident wrong answers. Measure precision when it is confident, not accuracy.
 - **One model or two.** The llama-server router holds one model at a time. Using the slow path's model as the judge keeps the prompt cache warm; a small judge model costs a switch.

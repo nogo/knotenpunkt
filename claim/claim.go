@@ -56,8 +56,10 @@ type Source struct {
 
 // Claim is one fact with its trust, source and the date it became true.
 // Retracted names the claim this one retracts; a retraction is never live itself.
+// Namespace is where the claim lives; a Store sets it on every claim it returns.
 type Claim struct {
 	ID         string    `json:"id"`
+	Namespace  Namespace `json:"-"`
 	Text       string    `json:"text"`
 	Trust      Trust     `json:"trust"`
 	AsOf       string    `json:"asof"`

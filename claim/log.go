@@ -24,10 +24,10 @@ const (
 	rejected
 )
 
-// Log is one append-only JSONL file with one writer. The file is the truth;
-// everything in memory is folded from it. Methods are safe for concurrent use,
-// but only one Log may have the file open.
-type Log struct {
+// nsLog is the storage of one namespace: an append-only JSONL file with one
+// writer. The file is the truth; everything in memory is folded from it.
+// Methods are safe for concurrent use, but only one nsLog may have the file open.
+type nsLog struct {
 	f   *os.File
 	now func() time.Time
 
@@ -37,13 +37,13 @@ type Log struct {
 	state  map[string]status
 }
 
-// Open opens the log at path, creating it if missing, and folds what is there.
-func Open(path string) (*Log, error) {
+// openNSLog opens the log at path, creating it if missing, and folds what is there.
+func openNSLog(path string) (*nsLog, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("claim: open log: %w", err)
 	}
-	l := &Log{
+	l := &nsLog{
 		f:      f,
 		now:    func() time.Time { return time.Now().UTC() },
 		claims: map[string]Claim{},
@@ -57,9 +57,9 @@ func Open(path string) (*Log, error) {
 }
 
 // Close closes the file.
-func (l *Log) Close() error { return l.f.Close() }
+func (l *nsLog) Close() error { return l.f.Close() }
 
-func (l *Log) replay() error {
+func (l *nsLog) replay() error {
 	sc := bufio.NewScanner(l.f)
 	sc.Buffer(nil, 1<<24)
 	for n := 1; sc.Scan(); n++ {
@@ -92,7 +92,7 @@ func (l *Log) replay() error {
 	return sc.Err()
 }
 
-func (l *Log) applyClaim(c Claim) {
+func (l *nsLog) applyClaim(c Claim) {
 	l.order = append(l.order, c.ID)
 	l.claims[c.ID] = c
 	if c.Author.Kind == User {
@@ -102,7 +102,7 @@ func (l *Log) applyClaim(c Claim) {
 	}
 }
 
-func (l *Log) applyDecision(d Decision) {
+func (l *nsLog) applyDecision(d Decision) {
 	if d.Outcome == Confirm {
 		l.state[d.ClaimID] = confirmed
 	} else {
@@ -113,7 +113,7 @@ func (l *Log) applyDecision(d Decision) {
 // liveSet is the fold: a claim is live when it is confirmed and nothing live
 // supersedes or retracts it. A link only points at an earlier claim, so one
 // pass from the newest entry back decides every claim.
-func (l *Log) liveSet() map[string]bool {
+func (l *nsLog) liveSet() map[string]bool {
 	live := map[string]bool{}
 	gone := map[string]bool{}
 	for i := len(l.order) - 1; i >= 0; i-- {
@@ -135,7 +135,7 @@ func (l *Log) liveSet() map[string]bool {
 }
 
 // Live returns the live claims in log order.
-func (l *Log) Live() []Claim {
+func (l *nsLog) Live() []Claim {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	live := l.liveSet()
@@ -149,7 +149,7 @@ func (l *Log) Live() []Claim {
 }
 
 // Proposals returns the claims that wait for a decision, in log order.
-func (l *Log) Proposals() []Claim {
+func (l *nsLog) Proposals() []Claim {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	var out []Claim
@@ -164,7 +164,7 @@ func (l *Log) Proposals() []Claim {
 // Append checks c and writes it. A claim by a User is live at once; a claim by
 // a Proposer is a proposal until a User decides it. An empty ID is filled in,
 // and RecordedAt is always set by the log. It returns the claim as recorded.
-func (l *Log) Append(c Claim) (Claim, error) {
+func (l *nsLog) Append(c Claim) (Claim, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if c.ID == "" {
@@ -190,7 +190,7 @@ func (l *Log) Append(c Claim) (Claim, error) {
 
 // Decide settles a pending proposal. Only a User may decide. The rules are not
 // checked again: they hold for a claim when it is written.
-func (l *Log) Decide(d Decision) error {
+func (l *nsLog) Decide(d Decision) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if d.Author.Kind != User || d.Author.ID == "" {
@@ -211,7 +211,7 @@ func (l *Log) Decide(d Decision) error {
 }
 
 // write appends one line and syncs it. v's fields are inlined next to "type".
-func (l *Log) write(kind string, v any) error {
+func (l *nsLog) write(kind string, v any) error {
 	body, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("claim: encode %s: %w", kind, err)
