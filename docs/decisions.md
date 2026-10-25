@@ -20,7 +20,7 @@
 
 The oracle reads sidenote records directly, without the claim package or external dependencies. Its only persistent output is a new JSONL file outside the vault and this repository. The file has owner-only permissions. Existing output files are refused.
 
-Log paths sort lexically, then records fold in file order. The last decision for a claim wins; `author: "user"` also confirms a claim. Only confirmed records supersede or retract claims. Historical confirmed claims remain available for conflict pairs. Retraction markers and revisions with equal text after removing whitespace and folding case supply no conflict label. Both endpoints of a challenge must be confirmed. This interpretation uses the issue's format; the upstream source was unavailable for verification.
+The fold follows sidenote's `internal/ledger` (checked 2026-10-25). A record's `author` is an object, and only `author.kind: "user"` confirms a claim directly. `supersedes` and `challenges` are lists of ids. Decisions apply in record id order (UUIDv7, so time order); the first decision on a claim wins, and a decision not made by the user is ignored, as sidenote refuses both. Only confirmed records supersede or retract claims. Historical confirmed claims remain available for conflict pairs. Retraction markers and revisions with equal text after removing whitespace and folding case supply no conflict label. Both endpoints of a challenge must be confirmed.
 
 The reader opens each log read-only and captures its length before reading records. It takes no locks. An unfinished final line is omitted and counted, so a concurrent append cannot produce a malformed record error. This is a bounded view of each file, not a transaction across files. A later run can include newly appended records.
 

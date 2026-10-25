@@ -10,17 +10,20 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
 
 type claim struct {
-	ID         string `json:"id"`
-	Text       string `json:"text"`
-	Author     string `json:"author"`
-	Supersedes string `json:"supersedes"`
-	Challenges string `json:"challenges"`
-	Retracted  bool   `json:"retracted"`
+	ID     string `json:"id"`
+	Text   string `json:"text"`
+	Author struct {
+		Kind string `json:"kind"`
+	} `json:"author"`
+	Supersedes []string `json:"supersedes"`
+	Challenges []string `json:"challenges"`
+	Retracted  bool     `json:"retracted"`
 	Source     struct {
 		Page string `json:"page"`
 	} `json:"source"`
@@ -152,7 +155,15 @@ func readVault(vault string, counts *Counts) (map[string]claim, map[string]bool,
 		files = append(files, snapshot{f, info.Size()})
 	}
 	claims := make(map[string]claim)
-	decisions := make(map[string]bool)
+	type decision struct {
+		ID      string `json:"id"`
+		Claim   string `json:"claim"`
+		Confirm bool   `json:"confirm"`
+		Author  struct {
+			Kind string `json:"kind"`
+		} `json:"author"`
+	}
+	var decisions []decision
 	for _, s := range files {
 		r := bufio.NewReader(io.NewSectionReader(s.file, 0, s.size))
 		for {
@@ -184,20 +195,30 @@ func readVault(vault string, counts *Counts) (map[string]claim, map[string]bool,
 				counts.Claims++
 				claims[c.ID] = c
 			case "claim_decision":
-				var d struct {
-					Claim   string `json:"claim"`
-					Confirm bool   `json:"confirm"`
-				}
+				var d decision
 				if json.Unmarshal(line, &d) != nil || d.Claim == "" {
 					return nil, nil, fmt.Errorf("oracle: malformed decision")
 				}
-				decisions[d.Claim] = d.Confirm
+				decisions = append(decisions, d)
 			}
 		}
 	}
+	// sidenote folds records in id order (UUIDv7, so time order), takes the
+	// first decision on a claim and refuses one that is not the user's.
+	sort.SliceStable(decisions, func(i, j int) bool { return decisions[i].ID < decisions[j].ID })
+	decided := make(map[string]bool)
 	confirmed := make(map[string]bool)
+	for _, d := range decisions {
+		if d.Author.Kind != "user" || decided[d.Claim] {
+			continue
+		}
+		decided[d.Claim] = true
+		confirmed[d.Claim] = d.Confirm
+	}
 	for id, c := range claims {
-		confirmed[id] = c.Author == "user" || decisions[id]
+		if c.Author.Kind == "user" {
+			confirmed[id] = true
+		}
 	}
 	return claims, confirmed, nil
 }
@@ -213,8 +234,8 @@ func makePairs(claims map[string]claim, confirmed map[string]bool, seed int64, c
 			if c.Retracted {
 				dead[id] = true
 			}
-			if c.Supersedes != "" {
-				dead[c.Supersedes] = true
+			for _, old := range c.Supersedes {
+				dead[old] = true
 			}
 		}
 	}
@@ -223,10 +244,14 @@ func makePairs(claims map[string]claim, confirmed map[string]bool, seed int64, c
 	seen := make(map[string]bool)
 	for _, id := range ids {
 		c := claims[id]
-		for _, link := range []struct{ target, rule string }{{c.Supersedes, "supersedes"}, {c.Challenges, "challenges"}} {
-			if link.target == "" {
-				continue
-			}
+		var links []struct{ target, rule string }
+		for _, t := range c.Supersedes {
+			links = append(links, struct{ target, rule string }{t, "supersedes"})
+		}
+		for _, t := range c.Challenges {
+			links = append(links, struct{ target, rule string }{t, "challenges"})
+		}
+		for _, link := range links {
 			old, exists := claims[link.target]
 			switch {
 			case !exists:
@@ -288,7 +313,8 @@ func normalize(s string) string { return strings.ToLower(strings.Join(strings.Fi
 
 // linked checks both directions because a log link has only one author.
 func linked(a, b claim) bool {
-	return a.Supersedes == b.ID || a.Challenges == b.ID || b.Supersedes == a.ID || b.Challenges == a.ID
+	return slices.Contains(a.Supersedes, b.ID) || slices.Contains(a.Challenges, b.ID) ||
+		slices.Contains(b.Supersedes, a.ID) || slices.Contains(b.Challenges, a.ID)
 }
 
 // pairKey identifies an unordered pair without delimiter ambiguity.

@@ -17,20 +17,20 @@ func inventedVault(t *testing.T) string {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	log := `{"type":"claim","id":"a","text":"ACME uses red","author":"user","source":{"page":"ACME"}}
-{"type":"claim","id":"b","text":"ACME uses blue","supersedes":"a","source":{"page":"ACME"}}
-{"type":"claim_decision","claim":"b","confirm":true}
-{"type":"claim","id":"c","text":" acme USES   blue ","author":"user","supersedes":"b","source":{"page":"ACME"}}
-{"type":"claim","id":"d","text":"OrderApp is open","author":"user","source":{"page":"OrderApp"}}
-{"type":"claim","id":"e","text":"OrderApp is closed","author":"user","challenges":"d","source":{"page":"OrderApp"}}
-{"type":"claim","id":"f","text":"Jane Roe can approve","author":"user","source":{"page":"Approvals"}}
-{"type":"claim","id":"g","text":"Retraction marker","author":"user","supersedes":"f","retracted":true}
-{"type":"claim","id":"h","text":"SECRET PROPOSAL","supersedes":"c","source":{"page":"Draft"}}
-{"type":"claim","id":"i","text":"ACME ships weekly","author":"user","source":{"page":"ACME"}}
-{"type":"claim","id":"j","text":"OrderApp uses queues","author":"user","source":{"page":"Queues"}}
-{"type":"claim","id":"k","text":"SECRET REJECTED","supersedes":"d"}
-{"type":"claim_decision","claim":"k","confirm":true}
-{"type":"claim_decision","claim":"k","confirm":false}
+	log := `{"type":"claim","id":"a","text":"ACME uses red","author":{"kind":"user","id":"u1"},"source":{"page":"ACME"}}
+{"type":"claim","id":"b","author":{"kind":"session","id":"s1"},"text":"ACME uses blue","supersedes":["a"],"source":{"page":"ACME"}}
+{"type":"claim_decision","id":"z1","claim":"b","confirm":true,"author":{"kind":"user","id":"u1"}}
+{"type":"claim","id":"c","text":" acme USES   blue ","author":{"kind":"user","id":"u1"},"supersedes":["b"],"source":{"page":"ACME"}}
+{"type":"claim","id":"d","text":"OrderApp is open","author":{"kind":"user","id":"u1"},"source":{"page":"OrderApp"}}
+{"type":"claim","id":"e","text":"OrderApp is closed","author":{"kind":"user","id":"u1"},"challenges":["d"],"source":{"page":"OrderApp"}}
+{"type":"claim","id":"f","text":"Jane Roe can approve","author":{"kind":"user","id":"u1"},"source":{"page":"Approvals"}}
+{"type":"claim","id":"g","text":"Retraction marker","author":{"kind":"user","id":"u1"},"supersedes":["f"],"retracted":true}
+{"type":"claim","id":"h","author":{"kind":"session","id":"s1"},"text":"SECRET PROPOSAL","supersedes":["c"],"source":{"page":"Draft"}}
+{"type":"claim","id":"i","text":"ACME ships weekly","author":{"kind":"user","id":"u1"},"source":{"page":"ACME"}}
+{"type":"claim","id":"j","text":"OrderApp uses queues","author":{"kind":"user","id":"u1"},"source":{"page":"Queues"}}
+{"type":"claim","id":"k","author":{"kind":"session","id":"s1"},"text":"SECRET REJECTED","supersedes":["d"]}
+{"type":"claim_decision","id":"z2","claim":"k","confirm":false,"author":{"kind":"user","id":"u1"}}
+{"type":"claim_decision","id":"z3","claim":"k","confirm":true,"author":{"kind":"user","id":"u1"}}
 {"type":"page","text":{"ignored":true}}
 `
 	if err := os.WriteFile(filepath.Join(dir, "01.jsonl"), []byte(log), 0600); err != nil {
@@ -156,7 +156,7 @@ func vaultFiles(t *testing.T, vault string) map[string][]byte {
 
 // TestUnrelatedShortfall reports scarcity without making invalid pairs.
 func TestUnrelatedShortfall(t *testing.T) {
-	claims := map[string]claim{"a": {ID: "a", Text: "ACME uses red"}, "b": {ID: "b", Text: "ACME uses blue", Supersedes: "a"}}
+	claims := map[string]claim{"a": {ID: "a", Text: "ACME uses red"}, "b": {ID: "b", Text: "ACME uses blue", Supersedes: []string{"a"}}}
 	var counts Counts
 	pairs := makePairs(claims, map[string]bool{"a": true, "b": true}, 1, &counts)
 	if len(pairs) != 1 || counts.Conflicts != 1 || counts.Unrelated != 0 || counts.Shortfall != 1 {
@@ -269,5 +269,41 @@ func TestExistingOutputPreserved(t *testing.T) {
 	data, err := os.ReadFile(out)
 	if err != nil || string(data) != "frozen" {
 		t.Fatal("existing oracle changed")
+	}
+}
+
+// TestSidenoteDecisionRules follows sidenote's fold: only the user decides,
+// the first decision in id order wins, and one claim may supersede several.
+func TestSidenoteDecisionRules(t *testing.T) {
+	vault := t.TempDir()
+	dir := filepath.Join(vault, "log", "m1")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	log := `{"type":"claim","id":"a","text":"ACME ships on Monday","author":{"kind":"user","id":"u1"},"source":{"page":"ACME"}}
+{"type":"claim","id":"b","text":"ACME ships on Friday","author":{"kind":"user","id":"u1"},"source":{"page":"ACME"}}
+{"type":"claim","id":"c","text":"ACME ships on Sunday","author":{"kind":"session","id":"s1"},"supersedes":["a","b"]}
+{"type":"claim","id":"d","text":"OrderApp runs nightly","author":{"kind":"session","id":"s1"},"supersedes":["a"]}
+{"type":"claim_decision","id":"y2","claim":"c","confirm":false,"author":{"kind":"user","id":"u1"}}
+{"type":"claim_decision","id":"y1","claim":"c","confirm":true,"author":{"kind":"user","id":"u1"}}
+{"type":"claim_decision","id":"y3","claim":"d","confirm":true,"author":{"kind":"session","id":"s1"}}
+`
+	if err := os.WriteFile(filepath.Join(dir, "2026-10-01.jsonl"), []byte(log), 0600); err != nil {
+		t.Fatal(err)
+	}
+	claims, confirmed, err := readVault(vault, new(Counts))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !confirmed["c"] {
+		t.Fatal("the first decision in id order (y1, confirm) must win over y2")
+	}
+	if confirmed["d"] {
+		t.Fatal("a decision not made by the user must not confirm")
+	}
+	var counts Counts
+	pairs := makePairs(claims, confirmed, 1, &counts)
+	if counts.Conflicts != 2 || pairs[0].Old != "ACME ships on Monday" || pairs[1].Old != "ACME ships on Friday" {
+		t.Fatalf("a claim superseding two claims must give two conflicts: %+v %+v", counts, pairs)
 	}
 }

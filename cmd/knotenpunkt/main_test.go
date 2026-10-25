@@ -15,7 +15,7 @@ func TestOracleCommand(t *testing.T) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	data := []byte("{\"type\":\"claim\",\"id\":\"a\",\"text\":\"PRIVATE ACME\",\"author\":\"user\"}\n")
+	data := []byte("{\"type\":\"claim\",\"id\":\"a\",\"text\":\"PRIVATE ACME\",\"author\":{\"kind\":\"user\",\"id\":\"u1\"}}\n")
 	if err := os.WriteFile(filepath.Join(dir, "01.jsonl"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
