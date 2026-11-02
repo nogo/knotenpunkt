@@ -1,6 +1,6 @@
 # Intake check and question gate on synthetic vaults
 
-Experiments of 2026-10-25/26 on friday (llama-server router, one model at a time). Spikes in `spikes/intake` and `spikes/gate`, plan in `spikes/NIGHT.md`. All data is invented: the synthetic vaults (`testdata/synthetic-vault`, `testdata/synthetic-vault-de`), plus Codex-written hard pairs, extra claims, source documents and questions. Codex's labels were not checked by the owner. Treat the numbers as direction: the claims are cleaner than real ones.
+Experiments of 2026-10-25/26 on friday (llama-server router, one model at a time). The spikes (`spikes/intake`, `spikes/gate`, plan in `spikes/NIGHT.md`) are in commit 492e2de; they were removed after. All data is invented: the synthetic vaults (`testdata/synthetic-vault`, `testdata/synthetic-vault-de`), plus Codex-written hard pairs, extra claims, source documents and questions. Codex's labels were not checked by the owner. Treat the numbers as direction: the claims are cleaner than real ones.
 
 ## Result
 
