@@ -28,6 +28,16 @@ Base: [Effective Go](https://go.dev/doc/effective_go), [Go Code Review Comments]
 - Callers branch on sentinels (`ErrInvalid`) via `errors.Is`, never on message text.
 - No `panic` outside `main` and impossible states.
 
+### Memory
+- Open a namespace only when a caller names it, and fold its log once. Later calls read the fold; they never read the file again.
+- Read the live claims once per operation and pass the slice on. Never fold or copy the live set again to answer a second question in the same call.
+- Stream the log line by line (`bufio.Scanner`). Never `os.ReadFile` a log or `io.ReadAll` an unbounded body. Cap every read that has no natural end, such as a model's response.
+- Store a claim once. Indexes hold ids, not copies of claims.
+- Copy a buffer only when you keep it. A scanner's line is decoded into the claim that keeps it; a skipped line is never copied.
+- Shorten before you build. Cut text with a byte bound before you join or convert it. Never use `[]rune(s)`; count with `utf8.RuneCountInString`.
+- Prefer iterators and in-place forms (`slices`, `maps`, `strings.SplitSeq`, `strings.Cut`) to intermediate slices and maps.
+- A memory claim names its measurement: `AllocedBytesPerOp` from `testing.Benchmark`, or a `runtime.MemStats` delta. Where a bound matters, a test guards it.
+
 ### Concurrency
 - Every goroutine has an owner that stops it; `Close` waits for it.
 - A mutex guards named fields; say which in a comment on the field or struct.

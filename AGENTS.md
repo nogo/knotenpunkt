@@ -21,6 +21,7 @@ It is a personal project, built issue by issue (`gh issue list`).
 - **No client data, ever.** Nothing from the work vault enters this repo: no claims, pages, client names or people's names. Use invented examples (ACME, OrderApp, Jane Roe). A tool that reads the work vault prints counts and scores, never content.
 - **No secrets** in files, commits or test fixtures.
 - **Decisions live in `docs/`, edited in the same change as the code** that implements or overturns them.
+- **Memory is a requirement.** Hosts embed knotenpunkt in processes that run for months, and a vault's log only grows. Keep no file or result in memory when one pass does. Store and copy a claim once. A change that claims a memory win shows the numbers before and after. The rules are in `CODING_STANDARDS.md`, "Memory".
 - **Verify before claiming.** Name the command or test that proves it.
 - **Small changes.** Do the task, not the adjacent improvement. Put anything else in a note.
 - **Comments:** a short one above a function (what it's for, when to reach for it); inline comments only when they earn their place.
