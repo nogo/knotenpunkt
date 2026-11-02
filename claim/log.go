@@ -2,6 +2,7 @@ package claim
 
 import (
 	"bufio"
+	"cmp"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,26 +19,40 @@ const (
 	typeDecision = "decision"
 )
 
-type status int
+// status is where an id stands in the fold. Only live and pending claims keep
+// their body in memory; for the rest the status is all that is left.
+type status uint8
 
 const (
-	pending status = iota
-	confirmed
-	rejected
+	pending    status = iota + 1
+	live              // confirmed, and nothing confirmed supersedes or retracts it
+	rejected          // a user rejected the proposal
+	gone              // a confirmed claim superseded or retracted it
+	retraction        // a confirmed retraction; never live itself
 )
 
 // nsLog is the storage of one namespace: an append-only JSONL file with one
-// writer. The file is the truth; everything in memory is folded from it.
-// Methods are safe for concurrent use, but only one nsLog may have the file open.
+// writer. The file is the history and the truth; memory holds only the working
+// tree, folded from it. Reads load a snapshot and take no lock; writes take mu.
+// Only one nsLog may have the file open.
 type nsLog struct {
 	f   *os.File
 	now func() time.Time
 
-	mu     sync.Mutex // guards every field below
-	order  []string   // claim ids in log order
-	claims map[string]Claim
-	state  map[string]status
-	gone   map[string]bool // ids a confirmed claim supersedes or retracts
+	mu     sync.Mutex        // orders writes; guards f's appends and status
+	status map[string]status // every id in the log
+
+	snap atomic.Pointer[snapshot] // what readers see; replaced, never changed
+}
+
+// snapshot is the working tree of a namespace: the live claims and the
+// proposals that wait, each in the order they got there. Readers share it
+// without a lock, so a writer never changes a published snapshot: it builds
+// and publishes a new one. A writer may append into spare capacity, because
+// no published slice reaches past its own length; removing always copies.
+type snapshot struct {
+	live      []Claim
+	proposals []Claim
 }
 
 // openNSLog opens the log at path, creating it if missing, and folds what is there.
@@ -48,9 +64,7 @@ func openNSLog(path string) (*nsLog, error) {
 	l := &nsLog{
 		f:      f,
 		now:    func() time.Time { return time.Now().UTC() },
-		claims: map[string]Claim{},
-		state:  map[string]status{},
-		gone:   map[string]bool{},
+		status: map[string]status{},
 	}
 	if err := l.replay(); err != nil {
 		f.Close()
@@ -71,7 +85,20 @@ type entry struct {
 	Outcome outcome `json:"outcome"`
 }
 
+// replay folds the file into the working tree. A body leaves memory as soon
+// as its claim is rejected or taken out, so even opening never holds the
+// whole history at once.
 func (l *nsLog) replay() error {
+	type held struct {
+		c    Claim
+		rank int // when the claim became live or pending
+	}
+	tree := map[string]held{}
+	rank := 0
+	keep := func(c Claim) {
+		rank++
+		tree[c.ID] = held{c, rank}
+	}
 	sc := bufio.NewScanner(l.f)
 	sc.Buffer(nil, 1<<24)
 	for n := 1; sc.Scan(); n++ {
@@ -84,98 +111,107 @@ func (l *nsLog) replay() error {
 		}
 		switch e.Type {
 		case typeClaim:
-			l.applyClaim(e.Claim)
+			c := e.Claim
+			if c.Author.Kind != User {
+				l.status[c.ID] = pending
+				keep(c)
+				continue
+			}
+			for _, id := range l.settle(c) {
+				delete(tree, id)
+			}
+			if l.status[c.ID] == live {
+				keep(c)
+			}
 		case typeDecision:
-			l.applyDecision(decision{ClaimID: e.ClaimID, Outcome: e.Outcome, Author: e.Author, RecordedAt: e.RecordedAt})
+			h, ok := tree[e.ClaimID]
+			if !ok || l.status[e.ClaimID] != pending {
+				continue
+			}
+			delete(tree, e.ClaimID)
+			if e.Outcome != confirmOutcome {
+				l.status[e.ClaimID] = rejected
+				continue
+			}
+			for _, id := range l.settle(h.c) {
+				delete(tree, id)
+			}
+			if l.status[h.c.ID] == live {
+				keep(h.c)
+			}
 		default:
 			return fmt.Errorf("line %d: unknown type %q", n, e.Type)
 		}
 	}
-	return sc.Err()
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	ids := make([]string, 0, len(tree))
+	nLive := 0
+	for id := range tree {
+		ids = append(ids, id)
+		if l.status[id] == live {
+			nLive++
+		}
+	}
+	slices.SortFunc(ids, func(a, b string) int { return cmp.Compare(tree[a].rank, tree[b].rank) })
+	s := snapshot{live: make([]Claim, 0, nLive), proposals: make([]Claim, 0, len(ids)-nLive)}
+	for _, id := range ids {
+		if l.status[id] == live {
+			s.live = append(s.live, tree[id].c)
+		} else {
+			s.proposals = append(s.proposals, tree[id].c)
+		}
+	}
+	l.snap.Store(&s)
+	return nil
 }
 
-func (l *nsLog) applyClaim(c Claim) {
-	l.order = append(l.order, c.ID)
-	l.claims[c.ID] = c
-	if c.Author.Kind == User {
-		l.confirm(c)
-	} else {
-		l.state[c.ID] = pending
-	}
-}
-
-func (l *nsLog) applyDecision(d decision) {
-	if d.Outcome == confirmOutcome {
-		l.confirm(l.claims[d.ClaimID])
-	} else {
-		l.state[d.ClaimID] = rejected
-	}
-}
-
-// confirm is the fold, one claim at a time: a confirmed claim takes what it
-// supersedes or retracts out of the live set for good, even when the claim
-// itself is later superseded. So the order of confirmations does not matter.
-func (l *nsLog) confirm(c Claim) {
-	l.state[c.ID] = confirmed
-	for _, target := range c.Supersedes {
-		l.gone[target] = true
-	}
+// settle is the fold for one confirmed claim: c becomes live, or a retraction,
+// and what it supersedes or retracts is gone for good, even if c itself is
+// superseded later. So the order of confirmations does not matter. It returns
+// the ids that left the live set. The caller holds mu, or is replay.
+func (l *nsLog) settle(c Claim) (out []string) {
 	if c.Retracted != "" {
-		l.gone[c.Retracted] = true
+		l.status[c.ID] = retraction
+	} else {
+		l.status[c.ID] = live
 	}
+	for _, id := range append(slices.Clip(c.Supersedes), c.Retracted) {
+		st, ok := l.status[id]
+		if !ok {
+			continue
+		}
+		if st == live {
+			out = append(out, id)
+		}
+		l.status[id] = gone
+	}
+	return out
 }
 
-// isLive tells if id is live: confirmed, not superseded or retracted, and no
-// retraction itself. The caller holds mu.
-func (l *nsLog) isLive(id string) bool {
-	return l.state[id] == confirmed && !l.gone[id] && l.claims[id].Retracted == ""
-}
-
-// appendLive appends the live claims in log order to dst, each marked with ns.
-func (l *nsLog) appendLive(dst []Claim, ns Namespace) []Claim {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.appendWhere(dst, ns, l.isLive)
-}
-
-// appendProposals appends the claims that wait for a decision, in log order.
-func (l *nsLog) appendProposals(dst []Claim, ns Namespace) []Claim {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.appendWhere(dst, ns, func(id string) bool { return l.state[id] == pending })
-}
-
-// appendWhere counts first, so dst grows once. The caller holds mu.
-func (l *nsLog) appendWhere(dst []Claim, ns Namespace, keep func(id string) bool) []Claim {
-	n := 0
-	for _, id := range l.order {
-		if keep(id) {
-			n++
+// without returns cs minus ids. With nothing to remove it returns cs itself;
+// otherwise a new slice, so a published snapshot never changes.
+func without(cs []Claim, ids ...string) []Claim {
+	if len(ids) == 0 {
+		return cs
+	}
+	out := make([]Claim, 0, len(cs))
+	for _, c := range cs {
+		if !slices.Contains(ids, c.ID) {
+			out = append(out, c)
 		}
 	}
-	dst = slices.Grow(dst, n)
-	for _, id := range l.order {
-		if keep(id) {
-			c := l.claims[id]
-			c.Namespace = ns
-			dst = append(dst, c)
-		}
-	}
-	return dst
+	return out
 }
 
-// Live returns the live claims in log order.
-func (l *nsLog) Live() []Claim { return l.appendLive(nil, Namespace{}) }
+// Live returns the live claims in the order they became live. The slice is
+// shared with readers: never change it.
+func (l *nsLog) Live() []Claim { return l.snap.Load().live }
 
-// Proposals returns the claims that wait for a decision, in log order.
-func (l *nsLog) Proposals() []Claim { return l.appendProposals(nil, Namespace{}) }
-
-// hasLive tells if id is live, for a citation from another namespace.
-func (l *nsLog) hasLive(id string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.isLive(id)
-}
+// Proposals returns the claims that wait for a decision, in log order. The
+// slice is shared with readers: never change it.
+func (l *nsLog) Proposals() []Claim { return l.snap.Load().proposals }
 
 // Append checks c and writes it. A claim by a User is live at once; a claim by
 // a Proposer is a proposal until a User decides it. An empty ID is filled in,
@@ -189,17 +225,29 @@ func (l *nsLog) Append(c Claim) (Claim, error) {
 			return Claim{}, err
 		}
 		c.ID = id
-	} else if _, dup := l.claims[c.ID]; dup {
+	} else if _, dup := l.status[c.ID]; dup {
 		return Claim{}, invalid("id %q is already in the log", c.ID)
 	}
-	if err := validClaim(c, l.isLive); err != nil {
+	if err := validClaim(c, func(id string) bool { return l.status[id] == live }); err != nil {
 		return Claim{}, err
 	}
+	c.Namespace = Namespace{}
 	c.RecordedAt = l.now()
 	if err := l.write(typeClaim, c); err != nil {
 		return Claim{}, err
 	}
-	l.applyClaim(c)
+	old := l.snap.Load()
+	next := *old
+	if c.Author.Kind == User {
+		next.live = without(old.live, l.settle(c)...)
+		if l.status[c.ID] == live {
+			next.live = append(next.live, c)
+		}
+	} else {
+		l.status[c.ID] = pending
+		next.proposals = append(old.proposals, c)
+	}
+	l.snap.Store(&next)
 	return c, nil
 }
 
@@ -214,14 +262,26 @@ func (l *nsLog) Decide(d decision) error {
 	if d.Outcome != confirmOutcome && d.Outcome != rejectOutcome {
 		return invalid("unknown outcome %q", d.Outcome)
 	}
-	if l.state[d.ClaimID] != pending || l.claims[d.ClaimID].ID == "" {
+	old := l.snap.Load()
+	i := slices.IndexFunc(old.proposals, func(c Claim) bool { return c.ID == d.ClaimID })
+	if l.status[d.ClaimID] != pending || i < 0 {
 		return invalid("claim %q is not a pending proposal", d.ClaimID)
 	}
 	d.RecordedAt = l.now()
 	if err := l.write(typeDecision, d); err != nil {
 		return err
 	}
-	l.applyDecision(d)
+	c := old.proposals[i]
+	next := snapshot{live: old.live, proposals: without(old.proposals, c.ID)}
+	if d.Outcome == rejectOutcome {
+		l.status[c.ID] = rejected
+	} else {
+		next.live = without(old.live, l.settle(c)...)
+		if l.status[c.ID] == live {
+			next.live = append(next.live, c)
+		}
+	}
+	l.snap.Store(&next)
 	return nil
 }
 

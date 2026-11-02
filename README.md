@@ -110,7 +110,7 @@ if err != nil {
 
 judge := &decide.Client{BaseURL: "http://localhost:8080", Model: "qwen-moe"}
 proposal := "The last OrderApp site moves during the December freeze."
-for _, c := range live {
+for c := range live {
 	res, err := judge.Decide(ctx, decide.Request{
 		Question: "Does the new claim conflict with the old one?",
 		Options: []decide.Option{
@@ -131,6 +131,7 @@ for _, c := range live {
 }
 ```
 
+`Live` and `Proposals` return iterators and take no lock: a loop sees the claims as they were when it began, so it may append or confirm inside the loop.
 A claim by a `claim.User` is live at once. A claim by a `claim.Proposer` waits in `store.Proposals(ns)` until a person calls `store.Confirm` or `store.Reject`.
 To correct a claim, append a new one with `Supersedes: []string{oldID}`. To carry a fact into another namespace, append a new claim there with `Source: claim.Cite(ns, id)`; never copy it.
 

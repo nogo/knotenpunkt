@@ -2,10 +2,14 @@ package claim
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"sync"
 	"testing"
+	"time"
 )
 
 var (
@@ -42,7 +46,7 @@ func liveIn(t *testing.T, s *Store, ns Namespace) []string {
 		t.Fatal(err)
 	}
 	var out []string
-	for _, c := range live {
+	for c := range live {
 		out = append(out, c.Namespace.String()+":"+c.Text)
 	}
 	return out
@@ -184,9 +188,13 @@ func TestReadingCreatesNothingAndReopenKeepsTheState(t *testing.T) {
 	if got := liveIn(t, again, acmeMig); !reflect.DeepEqual(got, before) {
 		t.Fatalf("after reopen %q, want %q", got, before)
 	}
-	props, err := again.Proposals(acmeMig)
-	if err != nil || len(props) != 1 || props[0].ID != p.ID || props[0].Namespace != acmeMig {
-		t.Fatalf("proposals after reopen = %+v, %v", props, err)
+	seq, err := again.Proposals(acmeMig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	props := slices.Collect(seq)
+	if len(props) != 1 || props[0].ID != p.ID || props[0].Namespace != acmeMig {
+		t.Fatalf("proposals after reopen = %+v", props)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "acme")); err != nil {
 		t.Fatal(err)
@@ -219,5 +227,101 @@ func TestProposingCostsTheSameInASmallAndALargeNamespace(t *testing.T) {
 	small, large := allocs(20), allocs(1000)
 	if large > small+2 {
 		t.Fatalf("allocations per proposal: %v with 20 claims, %v with 1000", small, large)
+	}
+}
+
+func TestAppendingInsideALiveLoopNeitherBlocksNorChangesTheLoop(t *testing.T) {
+	s, _ := openStore(t)
+	for i := range 3 {
+		put(t, s, acmeMig, sourced(fmt.Sprintf("ACME migration wave %d is planned", i), jane))
+	}
+	done := make(chan int)
+	go func() {
+		live, err := s.Live(acmeMig)
+		if err != nil {
+			t.Error(err)
+		}
+		seen := 0
+		for c := range live {
+			seen++
+			p, err := s.Append(acmeMig, sourced("A follow-up to "+c.Text, bot))
+			if err == nil {
+				err = s.Confirm(acmeMig, p.ID, jane.ID)
+			}
+			if err != nil {
+				t.Error(err)
+			}
+		}
+		done <- seen
+	}()
+	select {
+	case seen := <-done:
+		if seen != 3 {
+			t.Fatalf("loop saw %d claims, want the 3 from when it began", seen)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("appending inside a Live loop blocked")
+	}
+	if got := liveIn(t, s, acmeMig); len(got) != 6 {
+		t.Fatalf("live after the loop = %d, want 6", len(got))
+	}
+}
+
+func TestReadersRunWhileOneWriterAppends(t *testing.T) {
+	s, _ := openStore(t)
+	put(t, s, acme, sourced("ACME projects are sponsored by the COO", jane))
+	stop := make(chan struct{})
+	var readers sync.WaitGroup
+	for range 4 {
+		readers.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				live, err := s.Live(acmeMig)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				for c := range live {
+					if c.Text == "" {
+						t.Error("read a claim without text")
+					}
+				}
+				props, err := s.Proposals(acmeMig)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				for range props {
+				}
+			}
+		})
+	}
+	fillHistory(t, s, acmeMig, 200)
+	close(stop)
+	readers.Wait()
+	if got := liveIn(t, s, acmeMig); len(got) != 101 {
+		t.Fatalf("live = %d, want 100 of the namespace and 1 of the org", len(got))
+	}
+}
+
+func TestHistoryLeavesMemory(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onlyLive := Namespace{Org: "acme", Engagement: "only-live"}
+	for i := range 1000 {
+		put(t, s, onlyLive, sourced(fmt.Sprintf("The ACME review %d states that OrderApp release %d moves the checkout to the new payment provider before the freeze.", i, i%40), jane))
+	}
+	fillHistory(t, s, acmeMig, 2000) // 1000 live, 1000 superseded or rejected
+	s.Close()
+	base, withHistory := heldAfterOpen(t, dir, onlyLive), heldAfterOpen(t, dir, acmeMig)
+	if float64(withHistory) > 1.3*float64(base) {
+		t.Fatalf("held after open: %d B with history, %d B for the same live claims without", withHistory, base)
 	}
 }

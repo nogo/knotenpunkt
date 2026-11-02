@@ -2,6 +2,7 @@ package claim
 
 import (
 	"fmt"
+	"runtime"
 	"testing"
 )
 
@@ -62,8 +63,11 @@ func BenchmarkOpenNamespace(b *testing.B) {
 				if err != nil {
 					b.Fatal(err)
 				}
-				if _, err := re.Live(acmeMig); err != nil {
+				live, err := re.Live(acmeMig)
+				if err != nil {
 					b.Fatal(err)
+				}
+				for range live {
 				}
 				re.Close()
 			}
@@ -78,8 +82,11 @@ func BenchmarkLive(b *testing.B) {
 			defer s.Close()
 			b.ReportAllocs()
 			for b.Loop() {
-				if _, err := s.Live(acmeMig); err != nil {
+				live, err := s.Live(acmeMig)
+				if err != nil {
 					b.Fatal(err)
+				}
+				for range live {
 				}
 			}
 		})
@@ -115,4 +122,71 @@ func BenchmarkPropose(b *testing.B) {
 			}
 		})
 	}
+}
+
+// fillHistory writes n claims of which half are history: in every four, two
+// stay live, one is superseded by the next and one is rejected.
+func fillHistory(tb testing.TB, s *Store, ns Namespace, n int) {
+	tb.Helper()
+	prev := ""
+	for i := range n {
+		c := Claim{
+			Text:   fmt.Sprintf("The ACME review %d states that OrderApp release %d moves the checkout to the new payment provider before the freeze.", i, i%40),
+			Trust:  Sourced,
+			AsOf:   "2026-10-20",
+			Source: &Source{System: "sidenote", Ref: fmt.Sprintf("blk-%d", i), Version: "v1"},
+			Author: Author{Kind: Proposer, ID: "intake"},
+		}
+		if i%4 == 1 {
+			c.Supersedes = []string{prev}
+		}
+		got, err := s.Append(ns, c)
+		if err != nil {
+			tb.Fatal(err)
+		}
+		if i%4 == 3 {
+			err = s.Reject(ns, got.ID, "jane")
+		} else {
+			err = s.Confirm(ns, got.ID, "jane")
+		}
+		if err != nil {
+			tb.Fatal(err)
+		}
+		prev = got.ID
+	}
+}
+
+// heldAfterOpen is the heap a freshly opened namespace keeps.
+func heldAfterOpen(tb testing.TB, dir string, ns Namespace) uint64 {
+	tb.Helper()
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	s, err := OpenStore(dir)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	if _, err := s.log(ns, false); err != nil {
+		tb.Fatal(err)
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	runtime.KeepAlive(s)
+	s.Close()
+	return after.HeapAlloc - before.HeapAlloc
+}
+
+func BenchmarkHeldWithHistory(b *testing.B) {
+	dir := b.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		b.Fatal(err)
+	}
+	fillHistory(b, s, acmeMig, 2000)
+	s.Close()
+	var held uint64
+	for b.Loop() {
+		held = heldAfterOpen(b, dir, acmeMig)
+	}
+	b.ReportMetric(float64(held), "held-B")
 }

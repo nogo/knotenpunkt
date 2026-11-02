@@ -2,6 +2,7 @@ package claim
 
 import (
 	"iter"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -17,11 +18,11 @@ type Match struct {
 // Exclude accepts claim ids, such as a proposal's supersedes and challenges.
 // Ties use newer AsOf dates, then ascending ids. Empty input returns nothing.
 func (l *nsLog) Recall(text string, limit int, exclude ...string) []Match {
-	return recall(l.Live(), text, limit, exclude...)
+	return recall(slices.Values(l.Live()), text, limit, exclude...)
 }
 
 // recall ranks claims against text; Recall and Store.Recall share it.
-func recall(claims []Claim, text string, limit int, exclude ...string) []Match {
+func recall(claims iter.Seq[Claim], text string, limit int, exclude ...string) []Match {
 	if limit < 1 {
 		return nil
 	}
@@ -35,7 +36,7 @@ func recall(claims []Claim, text string, limit int, exclude ...string) []Match {
 	}
 	var matches []Match
 	seen := make(map[string]bool, len(query)) // reused: one map for every claim
-	for _, c := range claims {
+	for c := range claims {
 		if omitted[c.ID] {
 			continue
 		}

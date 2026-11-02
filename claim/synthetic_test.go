@@ -113,7 +113,7 @@ func TestSyntheticVaultKeepsNamespacesApart(t *testing.T) {
 			t.Fatal(err)
 		}
 		readable := false
-		for _, c := range live {
+		for c := range live {
 			readable = readable || c.ID == l.Target
 		}
 		if l.Label == "other-namespace" {
@@ -121,7 +121,7 @@ func TestSyntheticVaultKeepsNamespacesApart(t *testing.T) {
 				t.Errorf("%s: %s reads %s from %s", l.Proposal, l.Namespace, l.Target, l.TargetNamespace)
 			}
 			props, _ := s.Proposals(ns)
-			for _, p := range props {
+			for p := range props {
 				if p.ID != l.Proposal {
 					continue
 				}

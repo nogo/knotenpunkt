@@ -2,9 +2,11 @@ package claim
 
 import (
 	"fmt"
+	"iter"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -71,11 +73,12 @@ func Cite(ns Namespace, id string) *Source {
 
 // Store is the claim layer of one vault: every namespace in it. How claims are
 // laid out on disk is the store's own business; callers name a namespace.
+// Reading takes no lock once a namespace is open.
 type Store struct {
 	dir string
 
-	mu   sync.Mutex // guards logs
-	logs map[Namespace]*nsLog
+	opening sync.Mutex // serialises opening a namespace
+	logs    sync.Map   // Namespace -> *nsLog; an entry is never replaced
 }
 
 // OpenStore opens the vault's claims in dir, creating dir if missing.
@@ -83,19 +86,19 @@ func OpenStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("claim: open store: %w", err)
 	}
-	return &Store{dir: dir, logs: map[Namespace]*nsLog{}}, nil
+	return &Store{dir: dir}, nil
 }
 
 // Close closes every open namespace.
 func (s *Store) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.opening.Lock()
+	defer s.opening.Unlock()
 	var first error
-	for ns, l := range s.logs {
-		if err := l.Close(); err != nil && first == nil {
+	for ns, l := range s.logs.Range {
+		if err := l.(*nsLog).Close(); err != nil && first == nil {
 			first = err
 		}
-		delete(s.logs, ns)
+		s.logs.Delete(ns)
 	}
 	return first
 }
@@ -116,10 +119,13 @@ func (s *Store) log(ns Namespace, create bool) (*nsLog, error) {
 	if err := ns.valid(); err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if l, ok := s.logs[ns]; ok {
-		return l, nil
+	if l, ok := s.logs.Load(ns); ok {
+		return l.(*nsLog), nil
+	}
+	s.opening.Lock()
+	defer s.opening.Unlock()
+	if l, ok := s.logs.Load(ns); ok {
+		return l.(*nsLog), nil
 	}
 	path := s.path(ns)
 	if _, err := os.Stat(path); os.IsNotExist(err) && !create {
@@ -132,7 +138,7 @@ func (s *Store) log(ns Namespace, create bool) (*nsLog, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.logs[ns] = l
+	s.logs.Store(ns, l)
 	return l, nil
 }
 
@@ -174,7 +180,7 @@ func (s *Store) checkCite(ref string) error {
 	if err != nil {
 		return err
 	}
-	if l == nil || !l.hasLive(id) {
+	if l == nil || !slices.ContainsFunc(l.Live(), func(c Claim) bool { return c.ID == id }) {
 		return invalid("cite %q names no live claim", ref)
 	}
 	return nil
@@ -202,29 +208,57 @@ func (s *Store) decide(ns Namespace, d decision) error {
 	return l.Decide(d)
 }
 
-// Live returns the live claims ns reads: its own, then its org's. Each claim
-// carries the namespace it lives in.
-func (s *Store) Live(ns Namespace) ([]Claim, error) {
-	var out []Claim
-	for _, r := range ns.readable() {
+// Live returns the live claims ns reads: its own, then its org's, each in the
+// order it became live and marked with the namespace it lives in. The error
+// is only for opening the namespaces; ranging cannot fail. Reading takes no
+// lock: a loop sees the claims as they were when it began, and may append or
+// confirm meanwhile. Never change a claim's slices: they are shared.
+func (s *Store) Live(ns Namespace) (iter.Seq[Claim], error) {
+	var logs [2]*nsLog
+	names := ns.readable()
+	for i, r := range names {
 		l, err := s.log(r, false)
 		if err != nil {
 			return nil, err
 		}
-		if l != nil {
-			out = l.appendLive(out, r)
-		}
+		logs[i] = l
 	}
-	return out, nil
+	return func(yield func(Claim) bool) {
+		var trees [2][]Claim
+		for i, l := range logs {
+			if l != nil {
+				trees[i] = l.Live()
+			}
+		}
+		for i, tree := range trees {
+			for _, c := range tree {
+				c.Namespace = names[i]
+				if !yield(c) {
+					return
+				}
+			}
+		}
+	}, nil
 }
 
-// Proposals returns the claims in ns itself that wait for a decision.
-func (s *Store) Proposals(ns Namespace) ([]Claim, error) {
+// Proposals returns the claims in ns itself that wait for a decision, in log
+// order. Like Live, it takes no lock.
+func (s *Store) Proposals(ns Namespace) (iter.Seq[Claim], error) {
 	l, err := s.log(ns, false)
-	if err != nil || l == nil {
+	if err != nil {
 		return nil, err
 	}
-	return l.appendProposals(nil, ns), nil
+	return func(yield func(Claim) bool) {
+		if l == nil {
+			return
+		}
+		for _, c := range l.Proposals() {
+			c.Namespace = ns
+			if !yield(c) {
+				return
+			}
+		}
+	}, nil
 }
 
 // Recall ranks the live claims ns reads against text: best first, at most

@@ -7,7 +7,7 @@
 - A rule is checked when a claim is written and never again. Replaying the log and confirming a proposal do not check rules.
 - A source needs `system` and `ref`. `version` may be empty, because only the embedding system knows if a source has versions.
 - `recorded_at` is set by the log, not by the caller. An empty `id` is filled with a random hex string.
-- One writer is a rule for the caller. The log guards its own state with a mutex and takes no file lock.
+- ~~One writer is a rule for the caller. The log guards its own state with a mutex and takes no file lock.~~ *2026-11-02: reads take no lock; see "working tree". One writer per store and no file lock still hold.*
 
 ## Decided 2026-10-24 — word overlap recall
 
@@ -52,3 +52,12 @@ Counts describe read claim records, confirmed claim identifiers, live claims, an
 - The fold is kept per entry, not rebuilt per call. A confirmed claim takes what it supersedes or retracts out of the live set for good, even when it is itself superseded later. A claim is live when it is confirmed, not taken out, and no retraction. The order of confirmations does not matter, so an append checks links without a pass over the log.
 - A log line is decoded once, into one struct that holds both a claim's and a decision's fields.
 - Measured with `go test ./claim -bench .` at 2,000 claims in one namespace, before and after: `Live` 2.99 MB and 66 allocations per call to 0.41 MB and 6; `Recall` 6.25 MB to 2.23 MB; opening a namespace 5.4 MB to 3.3 MB; a proposal 124 KB and 40 allocations to 1.7 KB and 7, the same at 200 claims. `TestProposingCostsTheSameInASmallAndALargeNamespace` guards the last one.
+
+## Decided 2026-11-02 — working tree
+
+- As in git, the log file is the history and memory is the working tree. A namespace keeps the bodies of its live claims and its proposals; every other id keeps only its status (rejected, superseded or retracted, a retraction). A body leaves memory when its claim is rejected or taken out, during replay too.
+- Readers take no lock. Each namespace publishes an immutable snapshot through an `atomic.Pointer`; a writer holds the mutex, builds the next snapshot and publishes it. Removing from a snapshot copies; appending may use spare capacity, because no published slice reaches past its own length. Open namespaces sit in a `sync.Map`; only opening one takes a lock.
+- `Store.Live` and `Store.Proposals` return `iter.Seq[Claim]`. The error is only for opening the namespaces. A loop sees the snapshot from when it began, so a caller may append or confirm inside it, for example between two model calls.
+- Live claims come in the order they became live, not in log order: a proposal confirmed late comes after claims confirmed before it. Replay keeps the same order. Recall's ties use `asof` and id, so they do not depend on it.
+- Rejected: an iterator over the locked fold, because it holds the lock during a caller's model call and deadlocks when the caller appends; an `RWMutex`, because a reader still waits for a writer's sync; returning a copied slice, because the copy grows with the live set on every read.
+- Measured with `go test ./claim -bench .` at 2,000 claims, before and after: `Live` 0.41 MB per call to 536 B; the heap held after opening 2,000 claims of which half are history 1.33 MB to 0.64 MB; `Recall` 2.23 MB to 1.82 MB. Opening allocates 3.3 MB to 3.6 MB, for the order kept during replay. `TestHistoryLeavesMemory` guards the held heap.
