@@ -71,7 +71,7 @@ func TestProbabilitiesMapToOptionsAndRenormalise(t *testing.T) {
 	}
 }
 
-func TestTheFirstTokenOfAKeyCounts(t *testing.T) {
+func TestTheLikeliestTokenOfAKeyCounts(t *testing.T) {
 	c, _ := fakeServer(t, map[string]float64{"B": 0.5, " B": 0.3, "A": 0.2}, http.StatusOK)
 	res, err := c.Decide(context.Background(), Request{Options: verdict})
 	if err != nil {

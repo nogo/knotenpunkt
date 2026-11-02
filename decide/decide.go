@@ -137,7 +137,7 @@ func prompt(r Request) string {
 }
 
 // read turns the top tokens into option probabilities. A key may appear as
-// several tokens (" A", "A)"); the first, most likely one counts.
+// several tokens (" A", "A)"); the likeliest one counts, whatever the order.
 func read(r Request, top []token) Result {
 	p := map[string]float64{}
 	for _, t := range top {
@@ -146,9 +146,7 @@ func read(r Request, top []token) Result {
 		if len(k) != 1 || i < 0 {
 			continue
 		}
-		if _, seen := p[r.Options[i].ID]; !seen {
-			p[r.Options[i].ID] = math.Exp(t.Logprob)
-		}
+		p[r.Options[i].ID] = max(p[r.Options[i].ID], math.Exp(t.Logprob))
 	}
 	res := Result{Probs: map[string]float64{}}
 	for _, v := range p {
