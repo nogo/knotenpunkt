@@ -1,4 +1,5 @@
-// Command knotenpunkt builds a private oracle from a sidenote vault.
+// Command knotenpunkt builds a private oracle from a sidenote vault, and
+// scores decide on labelled claim pairs against free baselines.
 package main
 
 import (
@@ -23,8 +24,14 @@ func main() {
 
 // run parses flags silently so invalid arguments cannot echo private data.
 func run(args []string, out io.Writer) error {
+	if len(args) > 0 && args[0] == "score" {
+		return runScore(args[1:], out)
+	}
+	if len(args) > 0 && args[0] == "label" {
+		return runLabel(args[1:], out)
+	}
 	if len(args) == 0 || args[0] != "oracle" {
-		return fmt.Errorf("knotenpunkt: expected oracle command")
+		return fmt.Errorf("knotenpunkt: expected oracle, score or label command")
 	}
 	flags := flag.NewFlagSet("oracle", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)

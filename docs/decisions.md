@@ -35,3 +35,11 @@ Counts describe read claim records, confirmed claim identifiers, live claims, an
 - `supersedes`, `retracted` and `challenges` name claims in the claim's own namespace. A fact that crosses namespaces is a new claim whose source is `Cite(ns, id)`: system `knotenpunkt`, ref `<namespace>#<id>`. The cited claim must be live when the new claim is appended.
 - The per-namespace log is unexported (`nsLog`). The layout on disk is the store's own: `<dir>/<org>/_org.jsonl` for the org and `<dir>/<org>/<engagement>.jsonl` for an engagement. `_` cannot start a slug, so the names never clash. Reading a namespace with no claims creates no file.
 - Rejected: one log with a `namespace` field and a filter, because one missed filter leaks across clients; a deeper hierarchy, because the vault is already the outer boundary.
+
+## Decided 2026-10-25 — decide and score
+
+- `decide.Client.Decide` sends one chat request with `max_tokens: 1`, `temperature: 0`, `logprobs`, `top_logprobs: 20` and `enable_thinking: false`, and reads the option keys `A`–`I` from the first token, as `systemone-spike/run_http.py` did. A key that appears as several tokens (`A`, ` A`, `A)`) counts once, at its likeliest. Probabilities are renormalised over the options; `Mass` keeps what fell on them.
+- No option among the top tokens is `ErrNoOption`, with an `Unsure` result. An HTTP error is returned, never scored as an answer; `score` stops on it.
+- The conflict question and its three option descriptions live in `cmd/knotenpunkt`, next to their one caller. They move when the intake check needs them.
+- `score` prints one line each for the model, the constant baseline and word overlap. The overlap cut-off is learned on the same pairs and below it the answer is `unrelated`; it flatters the baseline on purpose. Per-pair results hold ids, labels and probabilities, never text, and are refused inside this repository.
+- First run, synthetic pairs (36, a third cross-language), threshold 0.7: qwen-27b 1.00 accuracy at 1.8 s per pair; qwen-moe 0.97 at 0.6 s, its one miss below the threshold; gemma-31b 0.97 at 1.7 s, its one miss a confident false alarm. Constant 0.33, overlap 0.53. The set is near its ceiling: it shows decide works, not which model is best.
