@@ -61,7 +61,7 @@ func loadSynthetic(t *testing.T) *Store {
 				put(t, s, ns, c)
 				where[rec.ID] = ns
 			case "claim_decision":
-				if err := s.Decide(where[rec.Claim], Decision{ClaimID: rec.Claim, Outcome: Confirm, Author: jane}); err != nil {
+				if err := s.Confirm(where[rec.Claim], rec.Claim, jane.ID); err != nil {
 					t.Fatalf("%s: %v", rec.Claim, err)
 				}
 			}

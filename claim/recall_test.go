@@ -27,7 +27,7 @@ func TestRecallOnlyReturnsLiveClaims(t *testing.T) {
 	live := mustAppend(t, l, correction)
 	mustAppend(t, l, sourced("ACME proposes OrderApp version five", bot))
 	rejected := mustAppend(t, l, sourced("ACME rejects OrderApp version six", bot))
-	if err := l.Decide(Decision{ClaimID: rejected.ID, Outcome: Reject, Author: jane}); err != nil {
+	if err := l.Decide(decision{ClaimID: rejected.ID, Outcome: rejectOutcome, Author: jane}); err != nil {
 		t.Fatal(err)
 	}
 	retracted := mustAppend(t, l, sourced("ACME retracts OrderApp version seven", jane))
@@ -35,7 +35,7 @@ func TestRecallOnlyReturnsLiveClaims(t *testing.T) {
 	r.Retracted = retracted.ID
 	mustAppend(t, l, r)
 	confirmed := mustAppend(t, l, sourced("ACME confirms OrderApp version eight", bot))
-	if err := l.Decide(Decision{ClaimID: confirmed.ID, Outcome: Confirm, Author: jane}); err != nil {
+	if err := l.Decide(decision{ClaimID: confirmed.ID, Outcome: confirmOutcome, Author: jane}); err != nil {
 		t.Fatal(err)
 	}
 	check := func(log *nsLog) {

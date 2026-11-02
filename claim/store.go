@@ -138,8 +138,12 @@ func (s *Store) log(ns Namespace, create bool) (*nsLog, error) {
 
 // Append checks c and writes it to ns. Supersedes, Retracted and Challenges
 // name claims in ns itself. A claim whose source is a Cite must cite a live
-// claim in this store. It returns the claim as recorded.
+// claim in this store. A claim whose Namespace is set must name ns. It
+// returns the claim as recorded.
 func (s *Store) Append(ns Namespace, c Claim) (Claim, error) {
+	if c.Namespace != (Namespace{}) && c.Namespace != ns {
+		return Claim{}, invalid("claim is from %s, not %s", c.Namespace, ns)
+	}
 	if c.Source != nil && c.Source.System == CiteSystem {
 		if err := s.checkCite(c.Source.Ref); err != nil {
 			return Claim{}, err
@@ -180,8 +184,18 @@ func (s *Store) checkCite(ref string) error {
 	return invalid("cite %q names no live claim", ref)
 }
 
-// Decide settles a pending proposal in ns. Only a User may decide.
-func (s *Store) Decide(ns Namespace, d Decision) error {
+// Confirm makes the proposal id in ns live. user names the person who
+// confirms; only a person confirms, never a model or a job.
+func (s *Store) Confirm(ns Namespace, id, user string) error {
+	return s.decide(ns, decision{ClaimID: id, Outcome: confirmOutcome, Author: Author{Kind: User, ID: user}})
+}
+
+// Reject settles the proposal id in ns for good: it never becomes live.
+func (s *Store) Reject(ns Namespace, id, user string) error {
+	return s.decide(ns, decision{ClaimID: id, Outcome: rejectOutcome, Author: Author{Kind: User, ID: user}})
+}
+
+func (s *Store) decide(ns Namespace, d decision) error {
 	l, err := s.log(ns, false)
 	if err != nil {
 		return err

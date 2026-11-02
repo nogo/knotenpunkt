@@ -11,7 +11,8 @@ import (
 	"time"
 )
 
-// ErrInvalid marks a claim or decision that breaks a rule. Nothing is appended.
+// ErrInvalid marks a claim, confirmation or rejection that breaks a rule.
+// Nothing is appended.
 var ErrInvalid = errors.New("claim: invalid")
 
 // Trust says what may be done with a claim.
@@ -39,7 +40,8 @@ const (
 	Proposer AuthorKind = "proposer"
 )
 
-// Author is who wrote an entry. Only a User decides.
+// Author is who wrote a claim. A User's claim is live at once; a Proposer's
+// claim waits until a user confirms it.
 type Author struct {
 	Kind AuthorKind `json:"kind"`
 	ID   string     `json:"id"`
@@ -56,7 +58,9 @@ type Source struct {
 
 // Claim is one fact with its trust, source and the date it became true.
 // Retracted names the claim this one retracts; a retraction is never live itself.
-// Namespace is where the claim lives; a Store sets it on every claim it returns.
+// Namespace is where the claim lives; a Store sets it on every claim it returns
+// and never writes it. ID may be empty and is then filled in; RecordedAt is
+// always set by the store.
 type Claim struct {
 	ID         string    `json:"id"`
 	Namespace  Namespace `json:"-"`
@@ -74,18 +78,19 @@ type Claim struct {
 	RecordedAt time.Time `json:"recorded_at"`
 }
 
-// Outcome is what a decision does to a proposal.
-type Outcome string
+// outcome is what a decision does to a proposal.
+type outcome string
 
 const (
-	Confirm Outcome = "confirm"
-	Reject  Outcome = "reject"
+	confirmOutcome outcome = "confirm"
+	rejectOutcome  outcome = "reject"
 )
 
-// Decision settles a proposal. Only a User may decide.
-type Decision struct {
+// decision is the log entry that settles a proposal. Only a User decides;
+// Store.Confirm and Store.Reject write it.
+type decision struct {
 	ClaimID    string    `json:"claim_id"`
-	Outcome    Outcome   `json:"outcome"`
+	Outcome    outcome   `json:"outcome"`
 	Author     Author    `json:"author"`
 	RecordedAt time.Time `json:"recorded_at"`
 }

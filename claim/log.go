@@ -80,7 +80,7 @@ func (l *nsLog) replay() error {
 			}
 			l.applyClaim(c)
 		case typeDecision:
-			var d Decision
+			var d decision
 			if err := json.Unmarshal(sc.Bytes(), &d); err != nil {
 				return fmt.Errorf("line %d: %w", n, err)
 			}
@@ -102,8 +102,8 @@ func (l *nsLog) applyClaim(c Claim) {
 	}
 }
 
-func (l *nsLog) applyDecision(d Decision) {
-	if d.Outcome == Confirm {
+func (l *nsLog) applyDecision(d decision) {
+	if d.Outcome == confirmOutcome {
 		l.state[d.ClaimID] = confirmed
 	} else {
 		l.state[d.ClaimID] = rejected
@@ -190,13 +190,13 @@ func (l *nsLog) Append(c Claim) (Claim, error) {
 
 // Decide settles a pending proposal. Only a User may decide. The rules are not
 // checked again: they hold for a claim when it is written.
-func (l *nsLog) Decide(d Decision) error {
+func (l *nsLog) Decide(d decision) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if d.Author.Kind != User || d.Author.ID == "" {
 		return invalid("only a user decides")
 	}
-	if d.Outcome != Confirm && d.Outcome != Reject {
+	if d.Outcome != confirmOutcome && d.Outcome != rejectOutcome {
 		return invalid("unknown outcome %q", d.Outcome)
 	}
 	if l.state[d.ClaimID] != pending || l.claims[d.ClaimID].ID == "" {

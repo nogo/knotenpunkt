@@ -147,13 +147,13 @@ func TestInvalidNamespaceIsRefused(t *testing.T) {
 	}
 }
 
-func TestDecideNeedsTheProposalsNamespace(t *testing.T) {
+func TestConfirmNeedsTheProposalsNamespace(t *testing.T) {
 	s, _ := openStore(t)
 	p := put(t, s, acmeMig, sourced("The migration starts on 2026-11-03", bot))
-	if err := s.Decide(acmeAPI, Decision{ClaimID: p.ID, Outcome: Confirm, Author: jane}); !errors.Is(err, ErrInvalid) {
+	if err := s.Confirm(acmeAPI, p.ID, jane.ID); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("decide in the wrong namespace: err = %v, want ErrInvalid", err)
 	}
-	if err := s.Decide(acmeMig, Decision{ClaimID: p.ID, Outcome: Confirm, Author: jane}); err != nil {
+	if err := s.Confirm(acmeMig, p.ID, jane.ID); err != nil {
 		t.Fatal(err)
 	}
 	if got := liveIn(t, s, acmeMig); len(got) != 1 {
@@ -190,5 +190,17 @@ func TestReadingCreatesNothingAndReopenKeepsTheState(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "acme")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAppendRefusesAClaimFromAnotherNamespace(t *testing.T) {
+	s, _ := openStore(t)
+	c := put(t, s, acmeMig, sourced("ACME moves OrderApp in March", jane))
+	c.ID = ""
+	if _, err := s.Append(acmeAPI, c); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("append to another namespace: got %v", err)
+	}
+	if got := liveIn(t, s, acmeAPI); len(got) != 0 {
+		t.Fatalf("acme/warehouse-api live = %v, want none", got)
 	}
 }

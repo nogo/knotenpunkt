@@ -31,7 +31,7 @@ Counts describe read claim records, confirmed claim identifiers, live claims, an
 ## Decided 2026-10-25 — namespaces
 
 - A `Store` is the claim layer of one vault and the only exported entry point. Every call names a `Namespace`: an org, or an org and one engagement, each lowercase letters, digits and dashes. `ParseNamespace` reads `org` or `org/engagement` and returns the zero namespace on error, which every method refuses.
-- An engagement reads its own live claims, then its org's. An org reads only its own. A sibling engagement or another org is never read, by `Live`, `Recall` or `RecallClaim`. `Proposals` and `Decide` act on the named namespace only.
+- An engagement reads its own live claims, then its org's. An org reads only its own. A sibling engagement or another org is never read, by `Live`, `Recall` or `RecallClaim`. `Proposals`, `Confirm` and `Reject` act on the named namespace only.
 - `supersedes`, `retracted` and `challenges` name claims in the claim's own namespace. A fact that crosses namespaces is a new claim whose source is `Cite(ns, id)`: system `knotenpunkt`, ref `<namespace>#<id>`. The cited claim must be live when the new claim is appended.
 - The per-namespace log is unexported (`nsLog`). The layout on disk is the store's own: `<dir>/<org>/_org.jsonl` for the org and `<dir>/<org>/<engagement>.jsonl` for an engagement. `_` cannot start a slug, so the names never clash. Reading a namespace with no claims creates no file.
 - Rejected: one log with a `namespace` field and a filter, because one missed filter leaks across clients; a deeper hierarchy, because the vault is already the outer boundary.
@@ -43,3 +43,9 @@ Counts describe read claim records, confirmed claim identifiers, live claims, an
 - The conflict question and its three option descriptions live in `cmd/knotenpunkt`, next to their one caller. They move when the intake check needs them.
 - `score` prints one line each for the model, the constant baseline and word overlap. The overlap cut-off is learned on the same pairs and below it the answer is `unrelated`; it flatters the baseline on purpose. Per-pair results hold ids, labels and probabilities, never text, and are refused inside this repository.
 - First run, synthetic pairs (36, a third cross-language), threshold 0.7: qwen-27b 1.00 accuracy at 1.8 s per pair; qwen-moe 0.97 at 0.6 s, its one miss below the threshold; gemma-31b 0.97 at 1.7 s, its one miss a confident false alarm. Constant 0.33, overlap 0.53. The set is near its ceiling: it shows decide works, not which model is best.
+
+## Decided 2026-11-02 — confirm and reject
+
+- `Store.Confirm(ns, id, user)` and `Store.Reject(ns, id, user)` replace `Store.Decide(ns, Decision)`. A decision's author can only be a user, and the log sets its time, so the struct asked the caller for one field with meaning. `Decision` and `Outcome` are now unexported. The line on disk is unchanged.
+- Rejected: keeping the name `Decide`, because the `decide` package is the model's judgement and a confirmation is the owner's; a namespace handle (`store.Namespace(ns)`), because "every call names a `Namespace`" above is a recorded decision, and the repeated argument has cost nothing yet.
+- `Append` refuses a claim whose `Namespace` is set and names another namespace, instead of filing it silently where the call says.

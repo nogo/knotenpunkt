@@ -112,7 +112,7 @@ func TestProposalIsNotLiveUntilConfirmed(t *testing.T) {
 	if len(l.Live()) != 0 || len(l.Proposals()) != 1 {
 		t.Fatalf("live=%d proposals=%d, want 0 and 1", len(l.Live()), len(l.Proposals()))
 	}
-	if err := l.Decide(Decision{ClaimID: p.ID, Outcome: Confirm, Author: jane}); err != nil {
+	if err := l.Decide(decision{ClaimID: p.ID, Outcome: confirmOutcome, Author: jane}); err != nil {
 		t.Fatal(err)
 	}
 	if got := liveIDs(l); len(got) != 1 || got[0] != p.ID {
@@ -134,10 +134,10 @@ func TestUserClaimIsLiveAtOnce(t *testing.T) {
 func TestRejectedProposalNeverBecomesLive(t *testing.T) {
 	l, path := openLog(t)
 	p := mustAppend(t, l, sourced("ACME runs OrderApp in production", bot))
-	if err := l.Decide(Decision{ClaimID: p.ID, Outcome: Reject, Author: jane}); err != nil {
+	if err := l.Decide(decision{ClaimID: p.ID, Outcome: rejectOutcome, Author: jane}); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.Decide(Decision{ClaimID: p.ID, Outcome: Confirm, Author: jane}); !errors.Is(err, ErrInvalid) {
+	if err := l.Decide(decision{ClaimID: p.ID, Outcome: confirmOutcome, Author: jane}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("confirming a rejected proposal: got %v, want ErrInvalid", err)
 	}
 	if len(l.Live()) != 0 {
@@ -157,7 +157,7 @@ func TestDecisionByNonUserIsRefused(t *testing.T) {
 	l, _ := openLog(t)
 	p := mustAppend(t, l, sourced("ACME runs OrderApp in production", bot))
 	for _, a := range []Author{bot, {Kind: User}, {}} {
-		if err := l.Decide(Decision{ClaimID: p.ID, Outcome: Confirm, Author: a}); !errors.Is(err, ErrInvalid) {
+		if err := l.Decide(decision{ClaimID: p.ID, Outcome: confirmOutcome, Author: a}); !errors.Is(err, ErrInvalid) {
 			t.Errorf("author %+v: got %v, want ErrInvalid", a, err)
 		}
 	}
@@ -169,9 +169,9 @@ func TestDecisionByNonUserIsRefused(t *testing.T) {
 func TestDecisionNeedsAPendingProposal(t *testing.T) {
 	l, _ := openLog(t)
 	c := mustAppend(t, l, sourced("ACME runs OrderApp in production", jane))
-	for _, d := range []Decision{
-		{ClaimID: "nope", Outcome: Confirm, Author: jane},
-		{ClaimID: c.ID, Outcome: Confirm, Author: jane},
+	for _, d := range []decision{
+		{ClaimID: "nope", Outcome: confirmOutcome, Author: jane},
+		{ClaimID: c.ID, Outcome: confirmOutcome, Author: jane},
 		{ClaimID: c.ID, Outcome: "maybe", Author: jane},
 	} {
 		if err := l.Decide(d); !errors.Is(err, ErrInvalid) {
@@ -189,7 +189,7 @@ func TestCorrectionSupersedesTheOldClaim(t *testing.T) {
 	if got := liveIDs(l); len(got) != 1 || got[0] != old.ID {
 		t.Fatalf("before confirm live = %v, want the old claim", got)
 	}
-	if err := l.Decide(Decision{ClaimID: p.ID, Outcome: Confirm, Author: jane}); err != nil {
+	if err := l.Decide(decision{ClaimID: p.ID, Outcome: confirmOutcome, Author: jane}); err != nil {
 		t.Fatal(err)
 	}
 	if got := liveIDs(l); len(got) != 1 || got[0] != p.ID {
@@ -213,7 +213,7 @@ func TestRejectedCorrectionLeavesTheOldClaimLive(t *testing.T) {
 	fix := sourced("ACME runs OrderApp version 4", bot)
 	fix.Supersedes = []string{old.ID}
 	p := mustAppend(t, l, fix)
-	if err := l.Decide(Decision{ClaimID: p.ID, Outcome: Reject, Author: jane}); err != nil {
+	if err := l.Decide(decision{ClaimID: p.ID, Outcome: rejectOutcome, Author: jane}); err != nil {
 		t.Fatal(err)
 	}
 	if got := liveIDs(l); len(got) != 1 || got[0] != old.ID {
@@ -247,7 +247,7 @@ func TestReopenGivesTheSameLiveSet(t *testing.T) {
 	fix := sourced("ACME runs OrderApp version 4", bot)
 	fix.Supersedes = []string{a.ID}
 	p := mustAppend(t, l, fix)
-	if err := l.Decide(Decision{ClaimID: p.ID, Outcome: Confirm, Author: jane}); err != nil {
+	if err := l.Decide(decision{ClaimID: p.ID, Outcome: confirmOutcome, Author: jane}); err != nil {
 		t.Fatal(err)
 	}
 	mustAppend(t, l, sourced("Jane Roe leads the OrderApp team", jane))
