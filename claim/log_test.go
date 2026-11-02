@@ -299,3 +299,26 @@ func writeFile(t *testing.T, path, s string) {
 		t.Fatal(err)
 	}
 }
+
+func TestSupersededCorrectionKeepsItsTargetGone(t *testing.T) {
+	l, path := openLog(t)
+	v3 := mustAppend(t, l, sourced("ACME runs OrderApp version 3", jane))
+	v4 := sourced("ACME runs OrderApp version 4", jane)
+	v4.Supersedes = []string{v3.ID}
+	v4 = mustAppend(t, l, v4)
+	v5 := sourced("ACME runs OrderApp version 5", jane)
+	v5.Supersedes = []string{v4.ID}
+	v5 = mustAppend(t, l, v5)
+	if got := liveIDs(l); len(got) != 1 || got[0] != v5.ID {
+		t.Fatalf("live = %v, want only version 5", got)
+	}
+	l.Close()
+	re, err := openNSLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer re.Close()
+	if got := liveIDs(re); len(got) != 1 || got[0] != v5.ID {
+		t.Fatalf("after reopen live = %v, want only version 5", got)
+	}
+}

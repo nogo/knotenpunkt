@@ -1,6 +1,7 @@
 package claim
 
 import (
+	"iter"
 	"sort"
 	"strings"
 	"unicode"
@@ -33,13 +34,16 @@ func recall(claims []Claim, text string, limit int, exclude ...string) []Match {
 		omitted[id] = true
 	}
 	var matches []Match
+	seen := make(map[string]bool, len(query)) // reused: one map for every claim
 	for _, c := range claims {
 		if omitted[c.ID] {
 			continue
 		}
+		clear(seen)
 		score := 0
-		for word := range words(c.Text) {
-			if query[word] {
+		for word := range wordSeq(c.Text) {
+			if query[word] && !seen[word] {
+				seen[word] = true
 				score++
 			}
 		}
@@ -74,14 +78,19 @@ func (l *nsLog) RecallClaim(c Claim, limit int) []Match {
 // words normalizes Unicode words and removes common English and German words.
 func words(text string) map[string]bool {
 	out := map[string]bool{}
-	for _, word := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
-	}) {
+	for word := range wordSeq(text) {
 		if !stopWords[word] {
 			out[word] = true
 		}
 	}
 	return out
+}
+
+// wordSeq yields the lowercased Unicode words of text, stop words included.
+func wordSeq(text string) iter.Seq[string] {
+	return strings.FieldsFuncSeq(strings.ToLower(text), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
 }
 
 var stopWords = func() map[string]bool {

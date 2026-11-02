@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 )
 
 // ErrInvalid marks a claim, confirmation or rejection that breaks a rule.
@@ -103,7 +104,7 @@ const minTextLen = 10
 
 // validClaim checks the rules of a claim against the live claims.
 func validClaim(c Claim, isLive func(id string) bool) error {
-	if len([]rune(c.Text)) < minTextLen {
+	if utf8.RuneCountInString(c.Text) < minTextLen {
 		return invalid("text is shorter than %d characters", minTextLen)
 	}
 	if !knownTrust[c.Trust] {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"sync"
 	"time"
 )
@@ -35,6 +36,7 @@ type nsLog struct {
 	order  []string   // claim ids in log order
 	claims map[string]Claim
 	state  map[string]status
+	gone   map[string]bool // ids a confirmed claim supersedes or retracts
 }
 
 // openNSLog opens the log at path, creating it if missing, and folds what is there.
@@ -48,6 +50,7 @@ func openNSLog(path string) (*nsLog, error) {
 		now:    func() time.Time { return time.Now().UTC() },
 		claims: map[string]Claim{},
 		state:  map[string]status{},
+		gone:   map[string]bool{},
 	}
 	if err := l.replay(); err != nil {
 		f.Close()
@@ -59,6 +62,15 @@ func openNSLog(path string) (*nsLog, error) {
 // Close closes the file.
 func (l *nsLog) Close() error { return l.f.Close() }
 
+// entry is one line of the log. A line holds a claim or a decision; decoding
+// both shapes into one struct reads each line once.
+type entry struct {
+	Type string `json:"type"`
+	Claim
+	ClaimID string  `json:"claim_id"`
+	Outcome outcome `json:"outcome"`
+}
+
 func (l *nsLog) replay() error {
 	sc := bufio.NewScanner(l.f)
 	sc.Buffer(nil, 1<<24)
@@ -66,27 +78,17 @@ func (l *nsLog) replay() error {
 		if len(sc.Bytes()) == 0 {
 			continue
 		}
-		var head struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(sc.Bytes(), &head); err != nil {
+		var e entry
+		if err := json.Unmarshal(sc.Bytes(), &e); err != nil {
 			return fmt.Errorf("line %d: %w", n, err)
 		}
-		switch head.Type {
+		switch e.Type {
 		case typeClaim:
-			var c Claim
-			if err := json.Unmarshal(sc.Bytes(), &c); err != nil {
-				return fmt.Errorf("line %d: %w", n, err)
-			}
-			l.applyClaim(c)
+			l.applyClaim(e.Claim)
 		case typeDecision:
-			var d decision
-			if err := json.Unmarshal(sc.Bytes(), &d); err != nil {
-				return fmt.Errorf("line %d: %w", n, err)
-			}
-			l.applyDecision(d)
+			l.applyDecision(decision{ClaimID: e.ClaimID, Outcome: e.Outcome, Author: e.Author, RecordedAt: e.RecordedAt})
 		default:
-			return fmt.Errorf("line %d: unknown type %q", n, head.Type)
+			return fmt.Errorf("line %d: unknown type %q", n, e.Type)
 		}
 	}
 	return sc.Err()
@@ -96,7 +98,7 @@ func (l *nsLog) applyClaim(c Claim) {
 	l.order = append(l.order, c.ID)
 	l.claims[c.ID] = c
 	if c.Author.Kind == User {
-		l.state[c.ID] = confirmed
+		l.confirm(c)
 	} else {
 		l.state[c.ID] = pending
 	}
@@ -104,61 +106,75 @@ func (l *nsLog) applyClaim(c Claim) {
 
 func (l *nsLog) applyDecision(d decision) {
 	if d.Outcome == confirmOutcome {
-		l.state[d.ClaimID] = confirmed
+		l.confirm(l.claims[d.ClaimID])
 	} else {
 		l.state[d.ClaimID] = rejected
 	}
 }
 
-// liveSet is the fold: a claim is live when it is confirmed and nothing live
-// supersedes or retracts it. A link only points at an earlier claim, so one
-// pass from the newest entry back decides every claim.
-func (l *nsLog) liveSet() map[string]bool {
-	live := map[string]bool{}
-	gone := map[string]bool{}
-	for i := len(l.order) - 1; i >= 0; i-- {
-		id := l.order[i]
-		if l.state[id] != confirmed || gone[id] {
-			continue
-		}
-		c := l.claims[id]
-		for _, target := range c.Supersedes {
-			gone[target] = true
-		}
-		if c.Retracted != "" {
-			gone[c.Retracted] = true
-			continue
-		}
-		live[id] = true
+// confirm is the fold, one claim at a time: a confirmed claim takes what it
+// supersedes or retracts out of the live set for good, even when the claim
+// itself is later superseded. So the order of confirmations does not matter.
+func (l *nsLog) confirm(c Claim) {
+	l.state[c.ID] = confirmed
+	for _, target := range c.Supersedes {
+		l.gone[target] = true
 	}
-	return live
+	if c.Retracted != "" {
+		l.gone[c.Retracted] = true
+	}
+}
+
+// isLive tells if id is live: confirmed, not superseded or retracted, and no
+// retraction itself. The caller holds mu.
+func (l *nsLog) isLive(id string) bool {
+	return l.state[id] == confirmed && !l.gone[id] && l.claims[id].Retracted == ""
+}
+
+// appendLive appends the live claims in log order to dst, each marked with ns.
+func (l *nsLog) appendLive(dst []Claim, ns Namespace) []Claim {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.appendWhere(dst, ns, l.isLive)
+}
+
+// appendProposals appends the claims that wait for a decision, in log order.
+func (l *nsLog) appendProposals(dst []Claim, ns Namespace) []Claim {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.appendWhere(dst, ns, func(id string) bool { return l.state[id] == pending })
+}
+
+// appendWhere counts first, so dst grows once. The caller holds mu.
+func (l *nsLog) appendWhere(dst []Claim, ns Namespace, keep func(id string) bool) []Claim {
+	n := 0
+	for _, id := range l.order {
+		if keep(id) {
+			n++
+		}
+	}
+	dst = slices.Grow(dst, n)
+	for _, id := range l.order {
+		if keep(id) {
+			c := l.claims[id]
+			c.Namespace = ns
+			dst = append(dst, c)
+		}
+	}
+	return dst
 }
 
 // Live returns the live claims in log order.
-func (l *nsLog) Live() []Claim {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	live := l.liveSet()
-	var out []Claim
-	for _, id := range l.order {
-		if live[id] {
-			out = append(out, l.claims[id])
-		}
-	}
-	return out
-}
+func (l *nsLog) Live() []Claim { return l.appendLive(nil, Namespace{}) }
 
 // Proposals returns the claims that wait for a decision, in log order.
-func (l *nsLog) Proposals() []Claim {
+func (l *nsLog) Proposals() []Claim { return l.appendProposals(nil, Namespace{}) }
+
+// hasLive tells if id is live, for a citation from another namespace.
+func (l *nsLog) hasLive(id string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	var out []Claim
-	for _, id := range l.order {
-		if l.state[id] == pending {
-			out = append(out, l.claims[id])
-		}
-	}
-	return out
+	return l.isLive(id)
 }
 
 // Append checks c and writes it. A claim by a User is live at once; a claim by
@@ -176,8 +192,7 @@ func (l *nsLog) Append(c Claim) (Claim, error) {
 	} else if _, dup := l.claims[c.ID]; dup {
 		return Claim{}, invalid("id %q is already in the log", c.ID)
 	}
-	live := l.liveSet()
-	if err := validClaim(c, func(id string) bool { return live[id] }); err != nil {
+	if err := validClaim(c, l.isLive); err != nil {
 		return Claim{}, err
 	}
 	c.RecordedAt = l.now()

@@ -3,7 +3,7 @@
 ## Decided 2026-10-24 — the claim log
 
 - A retraction is a claim whose `retracted` field names the claim it retracts. It is never live itself.
-- The fold runs from the newest entry back. A link only points at an earlier claim, so one pass decides every claim. If a correction is itself superseded, the claim it first superseded stays gone.
+- ~~The fold runs from the newest entry back. A link only points at an earlier claim, so one pass decides every claim. If a correction is itself superseded, the claim it first superseded stays gone.~~ *2026-11-02: the backward pass skipped the links of a superseded correction, so the claim it first superseded came back to life. The rule stays; see "confirm, reject and memory".*
 - A rule is checked when a claim is written and never again. Replaying the log and confirming a proposal do not check rules.
 - A source needs `system` and `ref`. `version` may be empty, because only the embedding system knows if a source has versions.
 - `recorded_at` is set by the log, not by the caller. An empty `id` is filled with a random hex string.
@@ -44,8 +44,11 @@ Counts describe read claim records, confirmed claim identifiers, live claims, an
 - `score` prints one line each for the model, the constant baseline and word overlap. The overlap cut-off is learned on the same pairs and below it the answer is `unrelated`; it flatters the baseline on purpose. Per-pair results hold ids, labels and probabilities, never text, and are refused inside this repository.
 - First run, synthetic pairs (36, a third cross-language), threshold 0.7: qwen-27b 1.00 accuracy at 1.8 s per pair; qwen-moe 0.97 at 0.6 s, its one miss below the threshold; gemma-31b 0.97 at 1.7 s, its one miss a confident false alarm. Constant 0.33, overlap 0.53. The set is near its ceiling: it shows decide works, not which model is best.
 
-## Decided 2026-11-02 — confirm and reject
+## Decided 2026-11-02 — confirm, reject and memory
 
 - `Store.Confirm(ns, id, user)` and `Store.Reject(ns, id, user)` replace `Store.Decide(ns, Decision)`. A decision's author can only be a user, and the log sets its time, so the struct asked the caller for one field with meaning. `Decision` and `Outcome` are now unexported. The line on disk is unchanged.
 - Rejected: keeping the name `Decide`, because the `decide` package is the model's judgement and a confirmation is the owner's; a namespace handle (`store.Namespace(ns)`), because "every call names a `Namespace`" above is a recorded decision, and the repeated argument has cost nothing yet.
 - `Append` refuses a claim whose `Namespace` is set and names another namespace, instead of filing it silently where the call says.
+- The fold is kept per entry, not rebuilt per call. A confirmed claim takes what it supersedes or retracts out of the live set for good, even when it is itself superseded later. A claim is live when it is confirmed, not taken out, and no retraction. The order of confirmations does not matter, so an append checks links without a pass over the log.
+- A log line is decoded once, into one struct that holds both a claim's and a decision's fields.
+- Measured with `go test ./claim -bench .` at 2,000 claims in one namespace, before and after: `Live` 2.99 MB and 66 allocations per call to 0.41 MB and 6; `Recall` 6.25 MB to 2.23 MB; opening a namespace 5.4 MB to 3.3 MB; a proposal 124 KB and 40 allocations to 1.7 KB and 7, the same at 200 claims. `TestProposingCostsTheSameInASmallAndALargeNamespace` guards the last one.

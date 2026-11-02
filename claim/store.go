@@ -174,14 +174,10 @@ func (s *Store) checkCite(ref string) error {
 	if err != nil {
 		return err
 	}
-	if l != nil {
-		for _, c := range l.Live() {
-			if c.ID == id {
-				return nil
-			}
-		}
+	if l == nil || !l.hasLive(id) {
+		return invalid("cite %q names no live claim", ref)
 	}
-	return invalid("cite %q names no live claim", ref)
+	return nil
 }
 
 // Confirm makes the proposal id in ns live. user names the person who
@@ -206,7 +202,8 @@ func (s *Store) decide(ns Namespace, d decision) error {
 	return l.Decide(d)
 }
 
-// Live returns the live claims ns reads: its own, then its org's.
+// Live returns the live claims ns reads: its own, then its org's. Each claim
+// carries the namespace it lives in.
 func (s *Store) Live(ns Namespace) ([]Claim, error) {
 	var out []Claim
 	for _, r := range ns.readable() {
@@ -214,12 +211,8 @@ func (s *Store) Live(ns Namespace) ([]Claim, error) {
 		if err != nil {
 			return nil, err
 		}
-		if l == nil {
-			continue
-		}
-		for _, c := range l.Live() {
-			c.Namespace = r
-			out = append(out, c)
+		if l != nil {
+			out = l.appendLive(out, r)
 		}
 	}
 	return out, nil
@@ -231,14 +224,11 @@ func (s *Store) Proposals(ns Namespace) ([]Claim, error) {
 	if err != nil || l == nil {
 		return nil, err
 	}
-	out := l.Proposals()
-	for i := range out {
-		out[i].Namespace = ns
-	}
-	return out, nil
+	return l.appendProposals(nil, ns), nil
 }
 
-// Recall ranks the live claims ns reads against text, as nsLog.Recall does.
+// Recall ranks the live claims ns reads against text: best first, at most
+// limit, leaving out the ids in exclude.
 func (s *Store) Recall(ns Namespace, text string, limit int, exclude ...string) ([]Match, error) {
 	live, err := s.Live(ns)
 	if err != nil {

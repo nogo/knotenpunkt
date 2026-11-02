@@ -204,3 +204,20 @@ func TestAppendRefusesAClaimFromAnotherNamespace(t *testing.T) {
 		t.Fatalf("acme/warehouse-api live = %v, want none", got)
 	}
 }
+
+func TestProposingCostsTheSameInASmallAndALargeNamespace(t *testing.T) {
+	allocs := func(n int) float64 {
+		s, _ := openStore(t)
+		fill(t, s, acmeMig, n)
+		c := Claim{Text: "ACME plans a second OrderApp review next quarter.", Trust: Unverified, AsOf: "2026-10-21", Author: bot}
+		return testing.AllocsPerRun(20, func() {
+			if _, err := s.Append(acmeMig, c); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	small, large := allocs(20), allocs(1000)
+	if large > small+2 {
+		t.Fatalf("allocations per proposal: %v with 20 claims, %v with 1000", small, large)
+	}
+}
