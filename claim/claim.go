@@ -6,6 +6,9 @@
 package claim
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -15,6 +18,40 @@ import (
 // ErrInvalid marks a claim, confirmation or rejection that breaks a rule.
 // Nothing is appended.
 var ErrInvalid = errors.New("claim: invalid")
+
+// ErrHistory marks an Append of a claim that is already in the log and no
+// longer live or pending. The error is a *HistoryError; nothing is appended.
+var ErrHistory = errors.New("claim: already in the log as history")
+
+// History is what became of a claim that is no longer live or pending.
+type History string
+
+const (
+	Rejected   History = "rejected"   // a user rejected the proposal
+	Superseded History = "superseded" // a confirmed claim replaced it
+	Retracted  History = "retracted"  // a confirmed retraction took it back
+	Retraction History = "retraction" // it is a confirmed retraction, never live itself
+)
+
+// HistoryError says that Append met a claim it already holds as history.
+// Appending the same claim again is a retry, so it never revives a claim. By
+// names the claim that superseded or retracted it; it is empty otherwise.
+// A Superseded claim whose source still states it points at source drift.
+type HistoryError struct {
+	ID    string
+	State History
+	By    string
+}
+
+func (e *HistoryError) Error() string {
+	if e.By == "" {
+		return fmt.Sprintf("claim: %s is already in the log, %s", e.ID, e.State)
+	}
+	return fmt.Sprintf("claim: %s is already in the log, %s by %s", e.ID, e.State, e.By)
+}
+
+// Unwrap lets callers branch with errors.Is(err, ErrHistory).
+func (e *HistoryError) Unwrap() error { return ErrHistory }
 
 // Trust says what may be done with a claim.
 type Trust string
@@ -60,8 +97,8 @@ type Source struct {
 // Claim is one fact with its trust, source and the date it became true.
 // Retracted names the claim this one retracts; a retraction is never live itself.
 // Namespace is where the claim lives; a Store sets it on every claim it returns
-// and never writes it. ID may be empty and is then filled in; RecordedAt is
-// always set by the store.
+// and never writes it. ID is the hash of the claim's content (contentID): leave
+// it empty, or it must match. RecordedAt is always set by the store.
 type Claim struct {
 	ID         string    `json:"id"`
 	Namespace  Namespace `json:"-"`
@@ -94,6 +131,40 @@ type decision struct {
 	Outcome    outcome   `json:"outcome"`
 	Author     Author    `json:"author"`
 	RecordedAt time.Time `json:"recorded_at"`
+}
+
+// contentID is a claim's id: the lowercase hex SHA-256 of its namespace and
+// everything the caller sent. ID and RecordedAt are left out, so the same
+// claim sent twice gets the same id, and two nodes never make the same id for
+// different claims. An empty list hashes like a missing one.
+func contentID(ns Namespace, c Claim) string {
+	b, err := json.Marshal(struct {
+		Namespace  string   `json:"namespace"`
+		Text       string   `json:"text"`
+		Trust      Trust    `json:"trust"`
+		AsOf       string   `json:"asof"`
+		Source     *Source  `json:"source"`
+		Party      string   `json:"party"`
+		Quote      string   `json:"quote"`
+		Attributed bool     `json:"attributed"`
+		Supersedes []string `json:"supersedes"`
+		Challenges []string `json:"challenges"`
+		Retracted  string   `json:"retracted"`
+		Author     Author   `json:"author"`
+	}{ns.String(), c.Text, c.Trust, c.AsOf, c.Source, c.Party, c.Quote, c.Attributed,
+		nilIfEmpty(c.Supersedes), nilIfEmpty(c.Challenges), c.Retracted, c.Author})
+	if err != nil {
+		panic(err) // impossible: strings, bools and string slices always encode
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func nilIfEmpty(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	return ids
 }
 
 func invalid(format string, args ...any) error {

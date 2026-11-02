@@ -6,7 +6,7 @@
 - ~~The fold runs from the newest entry back. A link only points at an earlier claim, so one pass decides every claim. If a correction is itself superseded, the claim it first superseded stays gone.~~ *2026-11-02: the backward pass skipped the links of a superseded correction, so the claim it first superseded came back to life. The rule stays; see "confirm, reject and memory".*
 - A rule is checked when a claim is written and never again. Replaying the log and confirming a proposal do not check rules.
 - A source needs `system` and `ref`. `version` may be empty, because only the embedding system knows if a source has versions.
-- `recorded_at` is set by the log, not by the caller. An empty `id` is filled with a random hex string.
+- `recorded_at` is set by the log, not by the caller. ~~An empty `id` is filled with a random hex string.~~ *2026-11-02: the id is the hash of the content; see "content ids".*
 - ~~One writer is a rule for the caller. The log guards its own state with a mutex and takes no file lock.~~ *2026-11-02: reads take no lock; see "working tree". One writer per store and no file lock still hold.*
 
 ## Decided 2026-10-24 — word overlap recall
@@ -61,3 +61,13 @@ Counts describe read claim records, confirmed claim identifiers, live claims, an
 - Live claims come in the order they became live, not in log order: a proposal confirmed late comes after claims confirmed before it. Replay keeps the same order. Recall's ties use `asof` and id, so they do not depend on it.
 - Rejected: an iterator over the locked fold, because it holds the lock during a caller's model call and deadlocks when the caller appends; an `RWMutex`, because a reader still waits for a writer's sync; returning a copied slice, because the copy grows with the live set on every read.
 - Measured with `go test ./claim -bench .` at 2,000 claims, before and after: `Live` 0.41 MB per call to 536 B; the heap held after opening 2,000 claims of which half are history 1.33 MB to 0.64 MB; `Recall` 2.23 MB to 1.82 MB. Opening allocates 3.3 MB to 3.6 MB, for the order kept during replay. `TestHistoryLeavesMemory` guards the held heap.
+
+## Decided 2026-11-02 — content ids
+
+- A claim's id is the lowercase hex SHA-256 (64 characters) of a fixed JSON encoding of its namespace, `text`, `trust`, `asof`, `source`, `party`, `quote`, `attributed`, `supersedes`, `challenges`, `retracted` and `author`. `recorded_at` is left out, and an empty list hashes like a missing one. As in git, the id names the record, not the meaning: two wordings of one fact are two claims, and `decide` judges whether they agree.
+- A repeat is a retry: the same claim appended again writes nothing and never revives a claim. While it is live or pending, `Append` returns it as recorded. Once it is history, `Append` returns a `*HistoryError` (`errors.Is(err, ErrHistory)`, not `ErrInvalid`) with its state, `rejected`, `superseded`, `retracted` or `retraction`, and for the middle two the claim that did it. A repeated superseded claim means its source still states it unchanged: source drift for the host to show. A revert is no repeat: it supersedes the newer claim, and the links are part of the hash. A fact stated again after a mistaken retraction needs a new source or `asof`.
+- To answer "by which claim", each superseded or retracted id keeps the id of the claim that took it out; the first one wins. At 2,000 claims of which half are history this holds 0.77 MB instead of 0.74 MB.
+- Rejected: a content id and an entry id, as git's blob and commit, so that a repeat could state a fact again; retries would need a request id again, and every link would have to choose an id.
+- A caller may leave the id empty; an id that differs from the hash is refused. Ids already in a log are read, never recomputed.
+- Rejected: random ids with a request id for retries, because ids across nodes would stay open; ids from embeddings or a model, because they change with the model and break every citation; `recorded_at` in the hash, because a retry would get a new id.
+- Memory: at 2,000 claims of which half are history, the heap held after open is 0.64 MB with 16-character random ids, 0.67 MB with 128-bit hashes (32 characters) and 0.74 MB with full SHA-256. Full length follows git; the difference is the id of every history entry.

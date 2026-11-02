@@ -12,8 +12,9 @@ import (
 const syntheticVault = "../testdata/synthetic-vault"
 
 // loadSynthetic replays the synthetic vault's sidenote log into a Store through
-// the public API: sessions propose, the user confirms.
-func loadSynthetic(t *testing.T) *Store {
+// the public API: sessions propose, the user confirms. It returns the store's
+// id for each fixture id, since the store makes ids from content.
+func loadSynthetic(t *testing.T) (*Store, map[string]string) {
 	t.Helper()
 	s, _ := openStore(t)
 	files, err := filepath.Glob(filepath.Join(syntheticVault, "log", "*", "????-??-??.jsonl"))
@@ -21,6 +22,7 @@ func loadSynthetic(t *testing.T) *Store {
 		t.Fatalf("synthetic log: %v, %d files", err, len(files))
 	}
 	where := map[string]Namespace{}
+	ids := map[string]string{}
 	for _, f := range files {
 		r, err := os.Open(f)
 		if err != nil {
@@ -53,22 +55,26 @@ func loadSynthetic(t *testing.T) *Store {
 				if err != nil {
 					t.Fatalf("%s: %v", rec.ID, err)
 				}
-				c := Claim{ID: rec.ID, Text: rec.Text, Trust: rec.Trust, AsOf: rec.AsOf, Party: rec.Party,
-					Attributed: rec.Attributed, Supersedes: rec.Supersedes, Author: bot}
+				var supersedes []string
+				for _, id := range rec.Supersedes {
+					supersedes = append(supersedes, ids[id])
+				}
+				c := Claim{Text: rec.Text, Trust: rec.Trust, AsOf: rec.AsOf, Party: rec.Party,
+					Attributed: rec.Attributed, Supersedes: supersedes, Author: bot}
 				if rec.Source != nil {
 					c.Source = &Source{System: "sidenote", Ref: rec.Source.Ref, Version: rec.Source.Version}
 				}
-				put(t, s, ns, c)
+				ids[rec.ID] = put(t, s, ns, c).ID
 				where[rec.ID] = ns
 			case "claim_decision":
-				if err := s.Confirm(where[rec.Claim], rec.Claim, jane.ID); err != nil {
+				if err := s.Confirm(where[rec.Claim], ids[rec.Claim], jane.ID); err != nil {
 					t.Fatalf("%s: %v", rec.Claim, err)
 				}
 			}
 		}
 		r.Close()
 	}
-	return s
+	return s, ids
 }
 
 type label struct {
@@ -101,7 +107,7 @@ func syntheticLabels(t *testing.T) []label {
 // synthetic vault: a labelled target is readable from its proposal's namespace,
 // and recall for a lookalike from another org never returns that org's claim.
 func TestSyntheticVaultKeepsNamespacesApart(t *testing.T) {
-	s := loadSynthetic(t)
+	s, ids := loadSynthetic(t)
 	labels := syntheticLabels(t)
 	if len(labels) != 42 {
 		t.Fatalf("labels = %d, want 42", len(labels))
@@ -114,7 +120,7 @@ func TestSyntheticVaultKeepsNamespacesApart(t *testing.T) {
 		}
 		readable := false
 		for c := range live {
-			readable = readable || c.ID == l.Target
+			readable = readable || c.ID == ids[l.Target]
 		}
 		if l.Label == "other-namespace" {
 			if readable {
@@ -122,7 +128,7 @@ func TestSyntheticVaultKeepsNamespacesApart(t *testing.T) {
 			}
 			props, _ := s.Proposals(ns)
 			for p := range props {
-				if p.ID != l.Proposal {
+				if p.ID != ids[l.Proposal] {
 					continue
 				}
 				matches, err := s.RecallClaim(ns, p, 20)

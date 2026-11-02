@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -217,11 +218,18 @@ func TestProposingCostsTheSameInASmallAndALargeNamespace(t *testing.T) {
 	allocs := func(n int) float64 {
 		s, _ := openStore(t)
 		fill(t, s, acmeMig, n)
-		c := Claim{Text: "ACME plans a second OrderApp review next quarter.", Trust: Unverified, AsOf: "2026-10-21", Author: bot}
-		return testing.AllocsPerRun(20, func() {
-			if _, err := s.Append(acmeMig, c); err != nil {
+		// Built before measuring; each run proposes a new claim. 100 runs
+		// spread a map's growth, which falls at random sizes, below the margin.
+		var claims []Claim
+		for i := range 101 {
+			claims = append(claims, Claim{Text: fmt.Sprintf("ACME plans OrderApp review %d next quarter.", i), Trust: Unverified, AsOf: "2026-10-21", Author: bot})
+		}
+		next := 0
+		return testing.AllocsPerRun(100, func() {
+			if _, err := s.Append(acmeMig, claims[next]); err != nil {
 				t.Fatal(err)
 			}
+			next++
 		})
 	}
 	small, large := allocs(20), allocs(1000)
@@ -321,7 +329,128 @@ func TestHistoryLeavesMemory(t *testing.T) {
 	fillHistory(t, s, acmeMig, 2000) // 1000 live, 1000 superseded or rejected
 	s.Close()
 	base, withHistory := heldAfterOpen(t, dir, onlyLive), heldAfterOpen(t, dir, acmeMig)
-	if float64(withHistory) > 1.3*float64(base) {
+	// History keeps an id and a status, about 100 B each; held bodies would
+	// double the heap. 1.5 tells the two apart.
+	if float64(withHistory) > 1.5*float64(base) {
 		t.Fatalf("held after open: %d B with history, %d B for the same live claims without", withHistory, base)
+	}
+}
+
+func TestIDIsTheHashOfNamespaceAndContent(t *testing.T) {
+	a, _ := openStore(t)
+	b, _ := openStore(t)
+	c := sourced("ACME moves OrderApp in March", bot)
+	first, second := put(t, a, acmeMig, c), put(t, b, acmeMig, c)
+	if first.ID != second.ID || len(first.ID) != 64 {
+		t.Fatalf("ids %q and %q, want one 64-character hash", first.ID, second.ID)
+	}
+	if other := put(t, a, acmeAPI, c); other.ID == first.ID {
+		t.Fatal("another namespace gave the same id")
+	}
+	changes := map[string]func(*Claim){
+		"text":       func(c *Claim) { c.Text += "." },
+		"trust":      func(c *Claim) { c.Trust = Unverified },
+		"asof":       func(c *Claim) { c.AsOf = "2026-01-16" },
+		"source":     func(c *Claim) { c.Source = &Source{System: "sidenote", Ref: "blk-2", Version: "v1"} },
+		"party":      func(c *Claim) { c.Party = "Jane Roe" },
+		"quote":      func(c *Claim) { c.Quote = "moves in March" },
+		"attributed": func(c *Claim) { c.Attributed = true },
+		"supersedes": func(c *Claim) { c.Supersedes = []string{"x"} },
+		"challenges": func(c *Claim) { c.Challenges = []string{"x"} },
+		"retracted":  func(c *Claim) { c.Retracted = "x" },
+		"author":     func(c *Claim) { c.Author = jane },
+	}
+	for name, change := range changes {
+		d := c
+		change(&d)
+		if contentID(acmeMig, d) == first.ID {
+			t.Errorf("changing %s kept the id", name)
+		}
+	}
+	d := c
+	d.RecordedAt = d.RecordedAt.AddDate(1, 0, 0)
+	d.Supersedes = []string{}
+	if contentID(acmeMig, d) != first.ID {
+		t.Error("recorded_at or an empty list changed the id")
+	}
+}
+
+func TestAppendingTheSameClaimAgainWritesNothing(t *testing.T) {
+	s, dir := openStore(t)
+	c := sourced("ACME moves OrderApp in March", bot)
+	first := put(t, s, acmeMig, c)
+	again := put(t, s, acmeMig, c)
+	if again.ID != first.ID || !again.RecordedAt.Equal(first.RecordedAt) {
+		t.Fatalf("retry gave %+v, want the claim as first recorded", again)
+	}
+	if err := s.Confirm(acmeMig, first.ID, jane.ID); err != nil {
+		t.Fatal(err)
+	}
+	if live := put(t, s, acmeMig, c); live.ID != first.ID {
+		t.Fatalf("retry after confirm gave %q", live.ID)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "acme", "migration.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(data), `"type":"claim"`); n != 1 {
+		t.Fatalf("log holds %d claim lines, want 1", n)
+	}
+}
+
+func TestRepeatingAClaimThatIsHistorySaysWhatBecameOfIt(t *testing.T) {
+	s, dir := openStore(t)
+	rejected := put(t, s, acmeMig, sourced("ACME moves OrderApp in March", bot))
+	if err := s.Reject(acmeMig, rejected.ID, jane.ID); err != nil {
+		t.Fatal(err)
+	}
+	old := put(t, s, acmeMig, sourced("ACME runs OrderApp version 3", jane))
+	fix := sourced("ACME runs OrderApp version 4", jane)
+	fix.Supersedes = []string{old.ID}
+	fix = put(t, s, acmeMig, fix)
+	wrong := put(t, s, acmeMig, sourced("ACME runs OrderApp in Berlin", jane))
+	back := put(t, s, acmeMig, Claim{Text: "Retracting: OrderApp never ran in Berlin", Trust: Unverified, AsOf: "2026-03-01", Retracted: wrong.ID, Author: jane})
+
+	want := []HistoryError{
+		{ID: rejected.ID, State: Rejected},
+		{ID: old.ID, State: Superseded, By: fix.ID},
+		{ID: wrong.ID, State: Retracted, By: back.ID},
+		{ID: back.ID, State: Retraction},
+	}
+	repeat := []Claim{rejected, old, wrong, back}
+	check := func(s *Store) {
+		t.Helper()
+		for i, c := range repeat {
+			c.RecordedAt = time.Time{}
+			_, err := s.Append(acmeMig, c)
+			var h *HistoryError
+			if !errors.As(err, &h) || *h != want[i] {
+				t.Errorf("repeat %s: got %v, want %+v", want[i].State, err, want[i])
+			}
+			if !errors.Is(err, ErrHistory) || errors.Is(err, ErrInvalid) {
+				t.Errorf("repeat %s: %v is not ErrHistory alone", want[i].State, err)
+			}
+		}
+	}
+	check(s)
+	s.Close()
+	again, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.Close()
+	check(again)
+}
+
+func TestAWrongCallerIDIsRefused(t *testing.T) {
+	s, _ := openStore(t)
+	c := sourced("ACME moves OrderApp in March", jane)
+	c.ID = "c-1"
+	if _, err := s.Append(acmeMig, c); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("caller id: got %v", err)
+	}
+	c.ID = contentID(acmeMig, c)
+	if got := put(t, s, acmeMig, c); got.ID != c.ID {
+		t.Fatalf("matching caller id: got %q", got.ID)
 	}
 }

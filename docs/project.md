@@ -57,7 +57,7 @@ Five earlier versions started with a code ingestion pipeline and a graph, and no
 
 - **How recall finds claims.** Plain text match first. exp-002 found the embedder was the strongest lever for code search; add embeddings only if they raise the oracle's score.
 - **Transport between nodes.** A goal, not decided. The mesh rules above must hold whatever the transport is.
-- **Claim ids across nodes.** Inside a vault a citation is `<namespace>#<id>`. Across nodes it also needs the node. The format is not fixed.
+- **Where a citation across nodes points.** A claim id is the hash of its namespace and content, so two nodes never make the same id and a citation names exactly one claim. Inside a vault a citation is `<namespace>#<id>`. Across nodes it must also say which node to read from; that format is not fixed.
 - **Where decide runs for the work vault.** llama-server runs on friday, and work claims must not leave the Mac. Either a model runs on the Mac, or decide is off for that node.
 - **The judge's reliability.** No System One model has yet beaten a constant answer: on 31 forge failures, always answering "provider" scores 0.65, the same as the best models. A judge that says "yes" too often gives confident wrong answers. Measure precision when it is confident, not accuracy.
 - **One model or two.** The llama-server router holds one model at a time. Using the slow path's model as the judge keeps the prompt cache warm; a small judge model costs a switch.

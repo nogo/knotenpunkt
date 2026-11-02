@@ -3,8 +3,6 @@ package claim
 import (
 	"bufio"
 	"cmp"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -27,20 +25,36 @@ const (
 	pending    status = iota + 1
 	live              // confirmed, and nothing confirmed supersedes or retracts it
 	rejected          // a user rejected the proposal
-	gone              // a confirmed claim superseded or retracted it
+	superseded        // a confirmed claim superseded it
+	retracted         // a confirmed retraction took it back
 	retraction        // a confirmed retraction; never live itself
 )
+
+// history names a status that is no longer live or pending, for HistoryError.
+func (s status) history() History {
+	switch s {
+	case rejected:
+		return Rejected
+	case superseded:
+		return Superseded
+	case retracted:
+		return Retracted
+	}
+	return Retraction
+}
 
 // nsLog is the storage of one namespace: an append-only JSONL file with one
 // writer. The file is the history and the truth; memory holds only the working
 // tree, folded from it. Reads load a snapshot and take no lock; writes take mu.
 // Only one nsLog may have the file open.
 type nsLog struct {
+	ns  Namespace // part of every claim's id
 	f   *os.File
 	now func() time.Time
 
-	mu     sync.Mutex        // orders writes; guards f's appends and status
+	mu     sync.Mutex        // orders writes; guards f's appends, status and by
 	status map[string]status // every id in the log
+	by     map[string]string // superseded or retracted id -> the claim that did it
 
 	snap atomic.Pointer[snapshot] // what readers see; replaced, never changed
 }
@@ -56,15 +70,17 @@ type snapshot struct {
 }
 
 // openNSLog opens the log at path, creating it if missing, and folds what is there.
-func openNSLog(path string) (*nsLog, error) {
+func openNSLog(path string, ns Namespace) (*nsLog, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("claim: open log: %w", err)
 	}
 	l := &nsLog{
+		ns:     ns,
 		f:      f,
 		now:    func() time.Time { return time.Now().UTC() },
 		status: map[string]status{},
+		by:     map[string]string{},
 	}
 	if err := l.replay(); err != nil {
 		f.Close()
@@ -168,25 +184,34 @@ func (l *nsLog) replay() error {
 }
 
 // settle is the fold for one confirmed claim: c becomes live, or a retraction,
-// and what it supersedes or retracts is gone for good, even if c itself is
-// superseded later. So the order of confirmations does not matter. It returns
-// the ids that left the live set. The caller holds mu, or is replay.
+// and what it supersedes or retracts leaves the live set for good, even if c
+// itself is superseded later. So the order of confirmations does not matter.
+// It returns the ids that left the live set. The caller holds mu, or is replay.
 func (l *nsLog) settle(c Claim) (out []string) {
 	if c.Retracted != "" {
 		l.status[c.ID] = retraction
+		out = l.takeOut(c.Retracted, retracted, c.ID, out)
 	} else {
 		l.status[c.ID] = live
 	}
-	for _, id := range append(slices.Clip(c.Supersedes), c.Retracted) {
-		st, ok := l.status[id]
-		if !ok {
-			continue
-		}
-		if st == live {
-			out = append(out, id)
-		}
-		l.status[id] = gone
+	for _, id := range c.Supersedes {
+		out = l.takeOut(id, superseded, c.ID, out)
 	}
+	return out
+}
+
+// takeOut marks id as superseded or retracted by the claim by, and adds it to
+// out if it was live. A claim keeps the first claim that took it out.
+func (l *nsLog) takeOut(id string, why status, by string, out []string) []string {
+	st := l.status[id]
+	if st != live && st != pending {
+		return out
+	}
+	if st == live {
+		out = append(out, id)
+	}
+	l.status[id] = why
+	l.by[id] = by
 	return out
 }
 
@@ -214,22 +239,29 @@ func (l *nsLog) Live() []Claim { return l.snap.Load().live }
 func (l *nsLog) Proposals() []Claim { return l.snap.Load().proposals }
 
 // Append checks c and writes it. A claim by a User is live at once; a claim by
-// a Proposer is a proposal until a User decides it. An empty ID is filled in,
-// and RecordedAt is always set by the log. It returns the claim as recorded.
-func (l *nsLog) Append(c Claim) (Claim, error) {
+// a Proposer is a proposal until a User decides it. The id is the hash of the
+// content; RecordedAt is always set by the log. A claim already in the log is
+// not written again: Append returns it as recorded while it is live or
+// pending, and returns a HistoryError once it is history. check, if set, runs after the
+// rules with mu held. It returns the claim as recorded.
+func (l *nsLog) Append(c Claim, check func() error) (Claim, error) {
+	id := contentID(l.ns, c)
+	if c.ID != "" && c.ID != id {
+		return Claim{}, invalid("id %q is not the hash of the claim's content", c.ID)
+	}
+	c.ID = id
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if c.ID == "" {
-		id, err := newID()
-		if err != nil {
-			return Claim{}, err
-		}
-		c.ID = id
-	} else if _, dup := l.status[c.ID]; dup {
-		return Claim{}, invalid("id %q is already in the log", c.ID)
+	if st, ok := l.status[id]; ok {
+		return l.recorded(id, st)
 	}
 	if err := validClaim(c, func(id string) bool { return l.status[id] == live }); err != nil {
 		return Claim{}, err
+	}
+	if check != nil {
+		if err := check(); err != nil {
+			return Claim{}, err
+		}
 	}
 	c.Namespace = Namespace{}
 	c.RecordedAt = l.now()
@@ -249,6 +281,20 @@ func (l *nsLog) Append(c Claim) (Claim, error) {
 	}
 	l.snap.Store(&next)
 	return c, nil
+}
+
+// recorded returns a claim that is already in the log, for a repeated Append.
+// A repeat is a retry: while the claim is live or pending it is returned as
+// recorded; once it is history, a HistoryError says what became of it. The
+// caller holds mu.
+func (l *nsLog) recorded(id string, st status) (Claim, error) {
+	s := l.snap.Load()
+	for _, tree := range [][]Claim{s.live, s.proposals} {
+		if i := slices.IndexFunc(tree, func(c Claim) bool { return c.ID == id }); i >= 0 {
+			return tree[i], nil
+		}
+	}
+	return Claim{}, &HistoryError{ID: id, State: st.history(), By: l.by[id]}
 }
 
 // Decide settles a pending proposal. Only a User may decide. The rules are not
@@ -300,12 +346,4 @@ func (l *nsLog) write(kind string, v any) error {
 		return fmt.Errorf("claim: sync log: %w", err)
 	}
 	return nil
-}
-
-func newID() (string, error) {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("claim: new id: %w", err)
-	}
-	return hex.EncodeToString(b), nil
 }

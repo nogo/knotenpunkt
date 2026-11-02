@@ -133,6 +133,7 @@ for c := range live {
 
 `Live` and `Proposals` return iterators and take no lock: a loop sees the claims as they were when it began, so it may append or confirm inside the loop.
 A claim by a `claim.User` is live at once. A claim by a `claim.Proposer` waits in `store.Proposals(ns)` until a person calls `store.Confirm` or `store.Reject`.
+A claim's id is the hash of its namespace and content, as in git: appending the same claim again writes nothing and returns it. If the claim is history by then, `Append` returns a `*claim.HistoryError` that says whether it was rejected, superseded or retracted, and by which claim.
 To correct a claim, append a new one with `Supersedes: []string{oldID}`. To carry a fact into another namespace, append a new claim there with `Source: claim.Cite(ns, id)`; never copy it.
 
 ## What the host owns

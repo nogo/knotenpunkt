@@ -17,7 +17,7 @@ var (
 func openLog(t *testing.T) (*nsLog, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "claims.jsonl")
-	l, err := openNSLog(path)
+	l, err := openNSLog(path, acmeMig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func sourced(text string, a Author) Claim {
 
 func mustAppend(t *testing.T, l *nsLog, c Claim) Claim {
 	t.Helper()
-	got, err := l.Append(c)
+	got, err := l.Append(c, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestAppendRefusesBrokenRules(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			c := sourced("Jane Roe owns the OrderApp budget", jane)
 			mutate(&c)
-			if _, err := l.Append(c); !errors.Is(err, ErrInvalid) {
+			if _, err := l.Append(c, nil); !errors.Is(err, ErrInvalid) {
 				t.Fatalf("got %v, want ErrInvalid", err)
 			}
 		})
@@ -81,7 +81,7 @@ func TestAppendRefusesBrokenRules(t *testing.T) {
 	if got := len(l.Live()); got != 1 {
 		t.Fatalf("live = %d, want 1", got)
 	}
-	reopened, err := openNSLog(path)
+	reopened, err := openNSLog(path, acmeMig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestAppendAcceptsWhatTheRulesAllow(t *testing.T) {
 		"committed with party":      {Text: "Jane Roe promised delivery by June", Trust: Committed, AsOf: "2026-02-01", Party: "Jane Roe", Source: block, Author: jane},
 		"contested with challenge":  {Text: "OrderApp does not run at ACME", Trust: Contested, AsOf: "2026-02-01", Source: block, Challenges: []string{base.ID}, Author: jane},
 	} {
-		if _, err := l.Append(c); err != nil {
+		if _, err := l.Append(c, nil); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -143,7 +143,7 @@ func TestRejectedProposalNeverBecomesLive(t *testing.T) {
 	if len(l.Live()) != 0 {
 		t.Fatal("rejected proposal is live")
 	}
-	re, err := openNSLog(path)
+	re, err := openNSLog(path, acmeMig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestCorrectionSupersedesTheOldClaim(t *testing.T) {
 	// The old claim stays in the log but cannot be superseded again.
 	again := sourced("ACME runs OrderApp version 5", jane)
 	again.Supersedes = []string{old.ID}
-	if _, err := l.Append(again); !errors.Is(err, ErrInvalid) {
+	if _, err := l.Append(again, nil); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("superseding a superseded claim: got %v", err)
 	}
 	raw := readFile(t, path)
@@ -256,7 +256,7 @@ func TestReopenGivesTheSameLiveSet(t *testing.T) {
 	pending := len(l.Proposals())
 	l.Close()
 
-	re, err := openNSLog(path)
+	re, err := openNSLog(path, acmeMig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,11 +275,11 @@ func TestReopenGivesTheSameLiveSet(t *testing.T) {
 func TestOpenRefusesACorruptLog(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "claims.jsonl")
 	writeFile(t, path, "not json\n")
-	if _, err := openNSLog(path); err == nil {
+	if _, err := openNSLog(path, acmeMig); err == nil {
 		t.Fatal("want an error")
 	}
 	writeFile(t, path, `{"type":"note"}`+"\n")
-	if _, err := openNSLog(path); err == nil {
+	if _, err := openNSLog(path, acmeMig); err == nil {
 		t.Fatal("want an error for an unknown type")
 	}
 }
@@ -313,7 +313,7 @@ func TestSupersededCorrectionKeepsItsTargetGone(t *testing.T) {
 		t.Fatalf("live = %v, want only version 5", got)
 	}
 	l.Close()
-	re, err := openNSLog(path)
+	re, err := openNSLog(path, acmeMig)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,7 +1,9 @@
 package claim
 
 import (
+	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -50,7 +52,7 @@ func TestRecallOnlyReturnsLiveClaims(t *testing.T) {
 		}
 	}
 	check(l)
-	reopened, err := openNSLog(path)
+	reopened, err := openNSLog(path, acmeMig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,18 +62,20 @@ func TestRecallOnlyReturnsLiveClaims(t *testing.T) {
 
 func TestRecallTiesUseDateThenID(t *testing.T) {
 	l, _ := openLog(t)
-	for _, entry := range []struct{ id, date string }{
-		{"z-old", "2026-01-01"}, {"b-new", "2026-03-01"}, {"a-new", "2026-03-01"},
-	} {
+	var got []string
+	for i, date := range []string{"2026-01-01", "2026-03-01", "2026-03-01"} {
 		c := sourced("ACME runs OrderApp in production", jane)
-		c.ID, c.AsOf = entry.id, entry.date
-		mustAppend(t, l, c)
+		c.AsOf = date
+		c.Source = &Source{System: "sidenote", Ref: fmt.Sprintf("blk-%d", i), Version: "v1"}
+		got = append(got, mustAppend(t, l, c).ID)
 	}
+	old, newer := got[0], []string{got[1], got[2]}
+	slices.Sort(newer)
 	var ids []string
 	for _, match := range l.Recall("OrderApp", 10) {
 		ids = append(ids, match.Claim.ID)
 	}
-	if want := []string{"a-new", "b-new", "z-old"}; !reflect.DeepEqual(ids, want) {
+	if want := append(newer, old); !reflect.DeepEqual(ids, want) {
 		t.Fatalf("ids = %v, want %v", ids, want)
 	}
 }

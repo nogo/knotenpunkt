@@ -134,7 +134,7 @@ func (s *Store) log(ns Namespace, create bool) (*nsLog, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("claim: open %s: %w", ns, err)
 	}
-	l, err := openNSLog(path)
+	l, err := openNSLog(path, ns)
 	if err != nil {
 		return nil, err
 	}
@@ -144,22 +144,25 @@ func (s *Store) log(ns Namespace, create bool) (*nsLog, error) {
 
 // Append checks c and writes it to ns. Supersedes, Retracted and Challenges
 // name claims in ns itself. A claim whose source is a Cite must cite a live
-// claim in this store. A claim whose Namespace is set must name ns. It
-// returns the claim as recorded.
+// claim in this store. A claim whose Namespace is set must name ns. The id is
+// the hash of ns and the content, so appending the same claim again writes
+// nothing: it returns the claim as recorded while it is live or pending, and
+// a *HistoryError (ErrHistory) once it is history. To state a fact again after a retraction,
+// give it a new AsOf. It returns the claim as recorded.
 func (s *Store) Append(ns Namespace, c Claim) (Claim, error) {
 	if c.Namespace != (Namespace{}) && c.Namespace != ns {
 		return Claim{}, invalid("claim is from %s, not %s", c.Namespace, ns)
 	}
+	var check func() error
 	if c.Source != nil && c.Source.System == CiteSystem {
-		if err := s.checkCite(c.Source.Ref); err != nil {
-			return Claim{}, err
-		}
+		ref := c.Source.Ref
+		check = func() error { return s.checkCite(ref) }
 	}
 	l, err := s.log(ns, true)
 	if err != nil {
 		return Claim{}, err
 	}
-	got, err := l.Append(c)
+	got, err := l.Append(c, check)
 	if err != nil {
 		return Claim{}, err
 	}
