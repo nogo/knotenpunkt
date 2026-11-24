@@ -71,3 +71,11 @@ Counts describe read claim records, confirmed claim identifiers, live claims, an
 - A caller may leave the id empty; an id that differs from the hash is refused. Ids already in a log are read, never recomputed.
 - Rejected: random ids with a request id for retries, because ids across nodes would stay open; ids from embeddings or a model, because they change with the model and break every citation; `recorded_at` in the hash, because a retry would get a new id.
 - Memory: at 2,000 claims of which half are history, the heap held after open is 0.64 MB with 16-character random ids, 0.67 MB with 128-bit hashes (32 characters) and 0.74 MB with full SHA-256. Full length follows git; the difference is the id of every history entry.
+
+## Decided 2026-11-24 — knotenpunkt owns the claims, behind a backend interface
+
+- **knotenpunkt owns the claim spec and its storage.** Claims flow from a host into knotenpunkt, and knotenpunkt decides how they are stored. A host keeps no claim log of its own, so there is one truth for claims.
+- Storage may sit behind an interface, as faden's `Store` does. The backends are knotenpunkt's: the JSONL files of "namespaces" first, an in-memory one for tests if a test needs it. The interface serves knotenpunkt's own backends, not a host that stores claims elsewhere. Not built: `claim` opens its files directly until a second backend is needed.
+- A host writes its own records and its claims in two commits. A repeated `Append` is a retry and writes nothing ("content ids"), so a host appends after its own commit and appends again after a restart.
+- Rejected: claims inside the host's log, with knotenpunkt as a library over it. The host would then own a copy of the spec and the second truth.
+
