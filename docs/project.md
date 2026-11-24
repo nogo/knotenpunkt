@@ -18,6 +18,7 @@ Five earlier versions started with a code ingestion pipeline and a graph, and no
 - **Store:** a vault's claims, append-only, addressed by namespace. A namespace is a confidentiality boundary, such as one client. A node is a set of namespaces. A correction is a new claim in the same namespace. The fold defines what is live.
 - **Propose and confirm:** a system proposes claims; only I make a claim live.
 - **Recall:** the live claims for a question.
+- **Due:** the claims that need a look now, with no question asked. These are a live claim that another live claim challenges, a claim whose source moved, an `unverified` claim older than the caller's limit, and a waiting proposal. The owning system says which sources moved, because the source is opaque here. Due is a fold query: no model, the same answer for the same log. The caller decides when and where to show it.
 - **Decide (System One):** a model scores a fixed list of options from log-probabilities, with the recalled claims in the prompt. It returns the probabilities, the claim ids it used, and `unsure` below a threshold. It reads and writes nothing.
 - **Escalate (System Two):** on `unsure`, the calling system runs its own slow path (a reasoning model or a harness) and proposes claims from the result.
 
