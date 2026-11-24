@@ -88,3 +88,11 @@ Counts describe read claim records, confirmed claim identifiers, live claims, an
 - **`OpenStoreReadOnly(dir)` reads beside a writer.** It creates nothing, every write returns `ErrReadOnly`, and a namespace is read once, when a call first names it.
 - **A last line without its newline is unfinished.** Replay skips it. A writable log cuts it off at open, so the next append starts on a clean line. Rejected: refusing to open, because a write cut off by a crash would then stop the host.
 - **Checked by** `TestSameTextIgnoresCaseAndSpacing`, `TestARepeatInOtherWordsOfTheSameSourceIsRefused`, `TestCheckSaysWhatAppendWouldDoAndWritesNothing`, `TestLookupSaysWhereAClaimStands`, `TestAReadOnlyStoreReadsBesideAWriter`, `TestAWriterCutsOffAnUnfinishedLineAtOpen`; `TestProposingCostsTheSameInASmallAndALargeNamespace` still passes with the repeat check.
+
+## Decided 2026-11-24 — Due
+
+- **`Store.Due(ns, q)` lists the claims that need a look with no question asked.** Reasons, in this order: `contested` (a live claim challenges it or it challenges a live claim; both sides come, with `With` naming the other), `moved` (the caller's `q.Moved` says its source moved), `unverified` (asof before `q.UnverifiedBefore`), `waiting` (a proposal of ns itself). A claim comes once, under its first reason; inside a reason the newest asof comes first, then the claim that became live or was proposed last.
+- **The caller knows what Due can't:** which sources moved, since the source is opaque here, and from what date an unverified claim is old. Without them those reasons stay empty.
+- **No model, no index:** Due reads the live set and the proposals once, so the same log gives the same list.
+- **`Trusts` lists the six trust values in the claim system's order,** for hosts that check a trust they are given.
+- **Checked by** `TestDueListsWhatNeedsALookInOrder` and `TestDueWithoutWhatTheCallerKnowsLeavesThoseOut`.

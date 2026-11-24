@@ -78,6 +78,10 @@ const (
 	Contested  Trust = "contested"
 )
 
+// Trusts are the six trust values, in the order the claim system lists them.
+// Never change the slice: it is shared.
+var Trusts = []Trust{Committed, Sourced, Derived, Position, Unverified, Contested}
+
 var knownTrust = map[Trust]bool{
 	Committed: true, Sourced: true, Derived: true,
 	Position: true, Unverified: true, Contested: true,
