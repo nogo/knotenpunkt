@@ -79,3 +79,12 @@ Counts describe read claim records, confirmed claim identifiers, live claims, an
 - A host writes its own records and its claims in two commits. A repeated `Append` is a retry and writes nothing ("content ids"), so a host appends after its own commit and appends again after a restart.
 - Rejected: claims inside the host's log, with knotenpunkt as a library over it. The host would then own a copy of the spec and the second truth.
 
+## Decided 2026-11-24 — what sidenote needs to embed the store
+
+- **`Store.Check(ns, c)` says why `Append` would refuse c, and writes and creates nothing.** A retry of a live or pending claim passes; a claim that is history returns its `*HistoryError`. sidenote checks a harness's lines with it before anything is recorded.
+- **`Store.Lookup(ns, id)` returns a claim's body while it is live or pending, and its `Standing`:** live, pending, or its `History` and the claim that took it out. It looks in ns itself, never in its org. `IDOf(ns, c)` is the id `Append` would record c under.
+- **A proposal that repeats a live claim or an open proposal is refused:** equal text, ignoring case and spacing, and the same source system and ref, or both without a source. A claim is no repeat of one it supersedes or retracts. A user's own claim is never a repeat. The compare walks both texts and allocates nothing, so proposing still costs the same in a large namespace. Ported from sidenote's intake check, where it stopped intake run twice from doubling what the user confirmed.
+- **A committed claim needs a party that is more than white space.**
+- **`OpenStoreReadOnly(dir)` reads beside a writer.** It creates nothing, every write returns `ErrReadOnly`, and a namespace is read once, when a call first names it.
+- **A last line without its newline is unfinished.** Replay skips it. A writable log cuts it off at open, so the next append starts on a clean line. Rejected: refusing to open, because a write cut off by a crash would then stop the host.
+- **Checked by** `TestSameTextIgnoresCaseAndSpacing`, `TestARepeatInOtherWordsOfTheSameSourceIsRefused`, `TestCheckSaysWhatAppendWouldDoAndWritesNothing`, `TestLookupSaysWhereAClaimStands`, `TestAReadOnlyStoreReadsBesideAWriter`, `TestAWriterCutsOffAnUnfinishedLineAtOpen`; `TestProposingCostsTheSameInASmallAndALargeNamespace` still passes with the repeat check.

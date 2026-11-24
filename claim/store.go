@@ -75,7 +75,8 @@ func Cite(ns Namespace, id string) *Source {
 // laid out on disk is the store's own business; callers name a namespace.
 // Reading takes no lock once a namespace is open.
 type Store struct {
-	dir string
+	dir      string
+	readOnly bool // OpenStoreReadOnly: never creates or writes
 
 	opening sync.Mutex // serialises opening a namespace
 	logs    sync.Map   // Namespace -> *nsLog; an entry is never replaced
@@ -87,6 +88,17 @@ func OpenStore(dir string) (*Store, error) {
 		return nil, fmt.Errorf("claim: open store: %w", err)
 	}
 	return &Store{dir: dir}, nil
+}
+
+// OpenStoreReadOnly opens the claims in dir for reading beside a process that
+// writes them. It creates nothing, and every write returns ErrReadOnly. A
+// namespace is read once, when a call first names it: open a new Store to see
+// later writes.
+func OpenStoreReadOnly(dir string) (*Store, error) {
+	if _, err := os.Stat(dir); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("claim: open store: %w", err)
+	}
+	return &Store{dir: dir, readOnly: true}, nil
 }
 
 // Close closes every open namespace.
@@ -128,13 +140,15 @@ func (s *Store) log(ns Namespace, create bool) (*nsLog, error) {
 		return l.(*nsLog), nil
 	}
 	path := s.path(ns)
-	if _, err := os.Stat(path); os.IsNotExist(err) && !create {
+	if _, err := os.Stat(path); os.IsNotExist(err) && (!create || s.readOnly) {
 		return nil, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, fmt.Errorf("claim: open %s: %w", ns, err)
+	if !s.readOnly {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return nil, fmt.Errorf("claim: open %s: %w", ns, err)
+		}
 	}
-	l, err := openNSLog(path, ns)
+	l, err := openNSLog(path, ns, s.readOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -158,6 +172,9 @@ func (s *Store) Append(ns Namespace, c Claim) (Claim, error) {
 		ref := c.Source.Ref
 		check = func() error { return s.checkCite(ref) }
 	}
+	if s.readOnly {
+		return Claim{}, ErrReadOnly
+	}
 	l, err := s.log(ns, true)
 	if err != nil {
 		return Claim{}, err
@@ -168,6 +185,51 @@ func (s *Store) Append(ns Namespace, c Claim) (Claim, error) {
 	}
 	got.Namespace = ns
 	return got, nil
+}
+
+// Check is why Append would refuse c in ns, nil when Append would take it, or
+// return it as a retry. It writes nothing and creates nothing. Reach for it to
+// tell a proposer what is wrong before anything is recorded.
+func (s *Store) Check(ns Namespace, c Claim) error {
+	if c.Namespace != (Namespace{}) && c.Namespace != ns {
+		return invalid("claim is from %s, not %s", c.Namespace, ns)
+	}
+	var check func() error
+	if c.Source != nil && c.Source.System == CiteSystem {
+		ref := c.Source.Ref
+		check = func() error { return s.checkCite(ref) }
+	}
+	l, err := s.log(ns, false)
+	if err != nil {
+		return err
+	}
+	if l != nil {
+		return l.Check(c, check)
+	}
+	if id := contentID(ns, c); c.ID != "" && c.ID != id {
+		return invalid("id %q is not the hash of the claim's content", c.ID)
+	}
+	if err := validClaim(c, func(string) bool { return false }); err != nil {
+		return err
+	}
+	if check != nil {
+		return check()
+	}
+	return nil
+}
+
+// Lookup finds the claim id in ns itself, not in its org: its body while it is
+// live or pending, and where it stands. ok is false for an id ns never held.
+func (s *Store) Lookup(ns Namespace, id string) (Claim, Standing, bool, error) {
+	l, err := s.log(ns, false)
+	if err != nil || l == nil {
+		return Claim{}, Standing{}, false, err
+	}
+	c, st, ok := l.Lookup(id)
+	if ok && (st.Live || st.Pending) {
+		c.Namespace = ns
+	}
+	return c, st, ok, nil
 }
 
 func (s *Store) checkCite(ref string) error {
@@ -201,6 +263,9 @@ func (s *Store) Reject(ns Namespace, id, user string) error {
 }
 
 func (s *Store) decide(ns Namespace, d decision) error {
+	if s.readOnly {
+		return ErrReadOnly
+	}
 	l, err := s.log(ns, false)
 	if err != nil {
 		return err

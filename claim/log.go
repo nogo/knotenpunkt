@@ -2,6 +2,7 @@ package claim
 
 import (
 	"bufio"
+	"bytes"
 	"cmp"
 	"encoding/json"
 	"fmt"
@@ -46,11 +47,13 @@ func (s status) history() History {
 // nsLog is the storage of one namespace: an append-only JSONL file with one
 // writer. The file is the history and the truth; memory holds only the working
 // tree, folded from it. Reads load a snapshot and take no lock; writes take mu.
-// Only one nsLog may have the file open.
+// Only one writable nsLog may have the file open; a read-only one may read
+// beside it.
 type nsLog struct {
-	ns  Namespace // part of every claim's id
-	f   *os.File
-	now func() time.Time
+	ns       Namespace // part of every claim's id
+	f        *os.File
+	readOnly bool // opened by a read-only Store: never writes, never truncates
+	now      func() time.Time
 
 	mu     sync.Mutex        // orders writes; guards f's appends, status and by
 	status map[string]status // every id in the log
@@ -69,18 +72,24 @@ type snapshot struct {
 	proposals []Claim
 }
 
-// openNSLog opens the log at path, creating it if missing, and folds what is there.
-func openNSLog(path string, ns Namespace) (*nsLog, error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o600)
+// openNSLog opens the log at path and folds what is there. A writable log is
+// created if missing; a read-only one must exist.
+func openNSLog(path string, ns Namespace, readOnly bool) (*nsLog, error) {
+	flag := os.O_RDWR | os.O_CREATE | os.O_APPEND
+	if readOnly {
+		flag = os.O_RDONLY
+	}
+	f, err := os.OpenFile(path, flag, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("claim: open log: %w", err)
 	}
 	l := &nsLog{
-		ns:     ns,
-		f:      f,
-		now:    func() time.Time { return time.Now().UTC() },
-		status: map[string]status{},
-		by:     map[string]string{},
+		ns:       ns,
+		f:        f,
+		readOnly: readOnly,
+		now:      func() time.Time { return time.Now().UTC() },
+		status:   map[string]status{},
+		by:       map[string]string{},
 	}
 	if err := l.replay(); err != nil {
 		f.Close()
@@ -103,7 +112,9 @@ type entry struct {
 
 // replay folds the file into the working tree. A body leaves memory as soon
 // as its claim is rejected or taken out, so even opening never holds the
-// whole history at once.
+// whole history at once. A last line without its newline is unfinished: a
+// write was cut off, or a writer is still writing it. Replay skips it; a
+// writable log then cuts it off, so the next line starts clean.
 func (l *nsLog) replay() error {
 	type held struct {
 		c    Claim
@@ -117,6 +128,14 @@ func (l *nsLog) replay() error {
 	}
 	sc := bufio.NewScanner(l.f)
 	sc.Buffer(nil, 1<<24)
+	unfinished := 0 // bytes after the last newline
+	sc.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+		if atEOF && len(data) > 0 && bytes.IndexByte(data, '\n') < 0 {
+			unfinished = len(data)
+			return len(data), nil, nil
+		}
+		return bufio.ScanLines(data, atEOF)
+	})
 	for n := 1; sc.Scan(); n++ {
 		if len(sc.Bytes()) == 0 {
 			continue
@@ -162,6 +181,11 @@ func (l *nsLog) replay() error {
 	if err := sc.Err(); err != nil {
 		return err
 	}
+	if unfinished > 0 && !l.readOnly {
+		if err := l.cutOff(int64(unfinished)); err != nil {
+			return err
+		}
+	}
 	ids := make([]string, 0, len(tree))
 	nLive := 0
 	for id := range tree {
@@ -181,6 +205,18 @@ func (l *nsLog) replay() error {
 	}
 	l.snap.Store(&s)
 	return nil
+}
+
+// cutOff drops the last n bytes of the file: an unfinished line.
+func (l *nsLog) cutOff(n int64) error {
+	info, err := l.f.Stat()
+	if err != nil {
+		return err
+	}
+	if err := l.f.Truncate(info.Size() - n); err != nil {
+		return fmt.Errorf("cut off an unfinished line: %w", err)
+	}
+	return l.f.Sync()
 }
 
 // settle is the fold for one confirmed claim: c becomes live, or a retraction,
@@ -255,13 +291,11 @@ func (l *nsLog) Append(c Claim, check func() error) (Claim, error) {
 	if st, ok := l.status[id]; ok {
 		return l.recorded(id, st)
 	}
-	if err := validClaim(c, func(id string) bool { return l.status[id] == live }); err != nil {
+	if err := l.admit(c, check); err != nil {
 		return Claim{}, err
 	}
-	if check != nil {
-		if err := check(); err != nil {
-			return Claim{}, err
-		}
+	if l.readOnly {
+		return Claim{}, ErrReadOnly
 	}
 	c.Namespace = Namespace{}
 	c.RecordedAt = l.now()
@@ -281,6 +315,67 @@ func (l *nsLog) Append(c Claim, check func() error) (Claim, error) {
 	}
 	l.snap.Store(&next)
 	return c, nil
+}
+
+// Check is why Append would refuse c, nil when Append would take it or treat it
+// as a retry. It writes nothing.
+func (l *nsLog) Check(c Claim, check func() error) error {
+	id := contentID(l.ns, c)
+	if c.ID != "" && c.ID != id {
+		return invalid("id %q is not the hash of the claim's content", c.ID)
+	}
+	c.ID = id
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if st, ok := l.status[id]; ok {
+		_, err := l.recorded(id, st)
+		return err
+	}
+	return l.admit(c, check)
+}
+
+// admit checks a claim that is not in the log yet: its rules, that a
+// proposal repeats no live claim or proposal, and check, if set. A user's own
+// claim is never a repeat: the person decides what they state twice. The
+// caller holds mu.
+func (l *nsLog) admit(c Claim, check func() error) error {
+	if err := validClaim(c, func(id string) bool { return l.status[id] == live }); err != nil {
+		return err
+	}
+	s := l.snap.Load()
+	if c.Author.Kind == Proposer {
+		if o, ok := duplicateOf(c, s.live); ok {
+			return invalid("already a live claim (%s): supersede it to change it", o.ID)
+		}
+		if o, ok := duplicateOf(c, s.proposals); ok {
+			return invalid("already proposed (%s)", o.ID)
+		}
+	}
+	if check != nil {
+		return check()
+	}
+	return nil
+}
+
+// Lookup finds id in the log: its body while it is live or pending, and where
+// it stands.
+func (l *nsLog) Lookup(id string) (Claim, Standing, bool) {
+	l.mu.Lock() // status and the snapshot change together under mu
+	defer l.mu.Unlock()
+	st, ok := l.status[id]
+	if !ok {
+		return Claim{}, Standing{}, false
+	}
+	if st != live && st != pending {
+		return Claim{}, Standing{History: st.history(), By: l.by[id]}, true
+	}
+	s := l.snap.Load()
+	tree := s.proposals
+	if st == live {
+		tree = s.live
+	}
+	i := slices.IndexFunc(tree, func(c Claim) bool { return c.ID == id })
+	return tree[i], Standing{Live: st == live, Pending: st == pending}, true
 }
 
 // recorded returns a claim that is already in the log, for a repeated Append.
@@ -307,6 +402,9 @@ func (l *nsLog) Decide(d decision) error {
 	}
 	if d.Outcome != confirmOutcome && d.Outcome != rejectOutcome {
 		return invalid("unknown outcome %q", d.Outcome)
+	}
+	if l.readOnly {
+		return ErrReadOnly
 	}
 	old := l.snap.Load()
 	i := slices.IndexFunc(old.proposals, func(c Claim) bool { return c.ID == d.ClaimID })

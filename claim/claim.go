@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -22,6 +23,18 @@ var ErrInvalid = errors.New("claim: invalid")
 // ErrHistory marks an Append of a claim that is already in the log and no
 // longer live or pending. The error is a *HistoryError; nothing is appended.
 var ErrHistory = errors.New("claim: already in the log as history")
+
+// ErrReadOnly marks a write to a Store opened with OpenStoreReadOnly.
+var ErrReadOnly = errors.New("claim: store is read-only")
+
+// Standing is where a claim stands in the fold: live, pending, or what became
+// of it. By names the claim that superseded or retracted it.
+type Standing struct {
+	Live    bool
+	Pending bool
+	History History // empty while it is live or pending
+	By      string
+}
 
 // History is what became of a claim that is no longer live or pending.
 type History string
@@ -160,6 +173,10 @@ func contentID(ns Namespace, c Claim) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// IDOf is the id c gets in ns: the hash Append records it under. Reach for it
+// to look a claim up before appending it.
+func IDOf(ns Namespace, c Claim) string { return contentID(ns, c) }
+
 func nilIfEmpty(ids []string) []string {
 	if len(ids) == 0 {
 		return nil
@@ -190,7 +207,7 @@ func validClaim(c Claim, isLive func(id string) bool) error {
 	if c.Author.ID == "" {
 		return invalid("author has no id")
 	}
-	if c.Trust == Committed && c.Party == "" {
+	if c.Trust == Committed && strings.TrimSpace(c.Party) == "" {
 		return invalid("committed claim has no party")
 	}
 	if c.Trust == Contested && len(c.Challenges) == 0 {

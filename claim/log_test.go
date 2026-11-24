@@ -17,7 +17,7 @@ var (
 func openLog(t *testing.T) (*nsLog, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "claims.jsonl")
-	l, err := openNSLog(path, acmeMig)
+	l, err := openNSLog(path, acmeMig, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestAppendRefusesBrokenRules(t *testing.T) {
 	if got := len(l.Live()); got != 1 {
 		t.Fatalf("live = %d, want 1", got)
 	}
-	reopened, err := openNSLog(path, acmeMig)
+	reopened, err := openNSLog(path, acmeMig, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestRejectedProposalNeverBecomesLive(t *testing.T) {
 	if len(l.Live()) != 0 {
 		t.Fatal("rejected proposal is live")
 	}
-	re, err := openNSLog(path, acmeMig)
+	re, err := openNSLog(path, acmeMig, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestReopenGivesTheSameLiveSet(t *testing.T) {
 	pending := len(l.Proposals())
 	l.Close()
 
-	re, err := openNSLog(path, acmeMig)
+	re, err := openNSLog(path, acmeMig, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,11 +275,11 @@ func TestReopenGivesTheSameLiveSet(t *testing.T) {
 func TestOpenRefusesACorruptLog(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "claims.jsonl")
 	writeFile(t, path, "not json\n")
-	if _, err := openNSLog(path, acmeMig); err == nil {
+	if _, err := openNSLog(path, acmeMig, false); err == nil {
 		t.Fatal("want an error")
 	}
 	writeFile(t, path, `{"type":"note"}`+"\n")
-	if _, err := openNSLog(path, acmeMig); err == nil {
+	if _, err := openNSLog(path, acmeMig, false); err == nil {
 		t.Fatal("want an error for an unknown type")
 	}
 }
@@ -313,7 +313,7 @@ func TestSupersededCorrectionKeepsItsTargetGone(t *testing.T) {
 		t.Fatalf("live = %v, want only version 5", got)
 	}
 	l.Close()
-	re, err := openNSLog(path, acmeMig)
+	re, err := openNSLog(path, acmeMig, false)
 	if err != nil {
 		t.Fatal(err)
 	}

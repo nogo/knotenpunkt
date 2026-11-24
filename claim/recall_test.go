@@ -52,7 +52,7 @@ func TestRecallOnlyReturnsLiveClaims(t *testing.T) {
 		}
 	}
 	check(l)
-	reopened, err := openNSLog(path, acmeMig)
+	reopened, err := openNSLog(path, acmeMig, false)
 	if err != nil {
 		t.Fatal(err)
 	}
