@@ -71,3 +71,4 @@ Five earlier versions started with a code ingestion pipeline and a graph, and no
 - Threads, meetings, entities and source cards from the claim system.
 - A check of a diff against a project's `decisions.md`.
 - An MCP read surface for harnesses (sidenote already serves claims read-only over MCP).
+- Asking another namespace or node for knowledge, as one asks a teammate (2026-11-24). The answering side recalls in its own namespace, and a gate decides what leaves: rules first, then a model, then my confirmation, since no judge has beaten a constant answer yet. The question leaks too, from the asker to the answering side. Waits until sidenote uses knotenpunkt.
